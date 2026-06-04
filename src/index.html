@@ -445,6 +445,10 @@ async function loadModel() {
       const baseConfig = await getBaseModelConfig(repo);
       if (baseConfig) arch = extractArch(baseConfig);
     } catch (e) { console.warn('Config fetch failed:', e); }
+    // Base model config may have MTP info even when the GGUF repo doesn't include MTP tensors
+    if (arch && !repo.toUpperCase().includes('MTP')) {
+      arch.mtpLayers = 0;
+    }
     cachedArch = arch;
 
     const slider = document.getElementById('ctx-slider');
