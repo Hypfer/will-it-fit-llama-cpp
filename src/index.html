@@ -275,12 +275,21 @@ let cachedArch = null;
 
 const QUANT_ORDER = [
   'F32','BF16','F16','Q8_K_XL','UD-Q8_K_XL','Q8_0',
-  'Q6_K_XL','UD-Q6_K_XL','Q6_K',
-  'Q5_K_XL','UD-Q5_K_XL','Q5_K_M','Q5_K_S',
-  'Q4_K_XL','UD-Q4_K_XL','Q4_1','Q4_K_M','IQ4_NL','Q4_K_S','Q4_0','IQ4_XS',
-  'Q3_K_XL','UD-Q3_K_XL','Q3_K_M','Q3_K_S','IQ3_XXS','UD-IQ3_XXS',
-  'Q2_K_XL','UD-Q2_K_XL','Q2_K','IQ2_M','UD-IQ2_M','IQ2_XXS','UD-IQ2_XXS',
+  'Q6_K_XL','UD-Q6_K_XL','Q6_K','UD-Q6_K',
+  'Q5_K_XL','UD-Q5_K_XL','Q5_K_M','UD-Q5_K_M','Q5_K_S','UD-Q5_K_S',
+  'Q4_K_XL','UD-Q4_K_XL','Q4_1','Q4_K_M','UD-Q4_K_M','IQ4_NL','Q4_K_S','UD-Q4_K_S','Q4_0','IQ4_XS','UD-IQ4_XS',
+  'Q3_K_XL','UD-Q3_K_XL','Q3_K_M','UD-Q3_K_M','Q3_K_S','UD-Q3_K_S','IQ3_XXS','UD-IQ3_XXS','IQ3_S','UD-IQ3_S',
+  'Q2_K_XL','UD-Q2_K_XL','Q2_K','UD-Q2_K','IQ2_M','UD-IQ2_M','IQ2_XXS','UD-IQ2_XXS','IQ1_M','UD-IQ1_M',
 ];
+
+function sortQuants(quants) {
+  return quants.sort((a, b) => {
+    const ia = QUANT_ORDER.indexOf(a.quant);
+    const ib = QUANT_ORDER.indexOf(b.quant);
+    return (ia === -1 ? 999 : ia) - (ib === -1 ? 999 : ib);
+  });
+}
+
 
 async function fetchJSON(url) {
   const r = await fetch(url);
@@ -336,15 +345,7 @@ function extractArch(config) {
 function parseQuant(filename) {
   const base = filename.replace('.gguf', '').split('/').pop();
   const match = base.match(/(-?(?:UD-)?(?:IQ\d+_[A-Z0-9_]+|Q\d+_[A-Z0-9_]+|F\d+))$/i);
-  return match ? match[1].toUpperCase().replace(/^-/, '') : base;
-}
-
-function sortQuants(quants) {
-  return quants.sort((a, b) => {
-    const ia = QUANT_ORDER.indexOf(a.quant);
-    const ib = QUANT_ORDER.indexOf(b.quant);
-    return (ia === -1 ? 999 : ia) - (ib === -1 ? 999 : ib);
-  });
+  return match ? match[1].toUpperCase().replace(/^-/, '') : base.toUpperCase();
 }
 
 function fmtCtx(n) {
