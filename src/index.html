@@ -612,9 +612,10 @@ function check() {
     cmd += ` --spec-type draft-mtp --spec-draft-n-max 2`;
   }
 
+  const cmdEscaped = cmd.replace(/</g, '&lt;').replace(/>/g, '&gt;');
   cmdContainer.innerHTML = `
     <div class="cmd-label" id="cmd-label">Ready to run (Click box to copy)</div>
-    <div class="cmd-box" id="cmd-box" title="Click to copy to clipboard"><code>${cmd}</code></div>
+    <div class="cmd-box" id="cmd-box" title="Click to copy to clipboard"><code>${cmdEscaped}</code></div>
     <div style="font-size: 0.75rem; color: var(--text-light); margin-top: 0.5rem; font-style: italic;">For best results, take this as just a starting point and play around with it.</div>
   `;
 
