@@ -377,11 +377,24 @@ function fmtCtx(n) {
   return n.toLocaleString();
 }
 
+// CUDA MATRIX_ROW_PADDING: quantized tensors pad ne0 to next 512 boundary
+// F16/F32 are not quantized types, so they get no padding
+// Returns { bpp, pct } where pct is the overhead percentage (0 if none)
+function effectiveBpp(rowElems, bpp) {
+  if (rowElems % 512 === 0 || bpp >= 2) return { bpp, pct: 0 };
+  const padElems = 512 - (rowElems % 512);
+  const padBytes = padElems * bpp;
+  const rawBytes = rowElems * bpp;
+  const pct = (padBytes / rawBytes) * 100;
+  return { bpp: bpp * (1 + padBytes / rawBytes), pct };
+}
+
 // KV cache: K + V split, each with own BPP
 function calcKVCache(ctx, ubatch, arch, kBpp, vBpp) {
   const mainLayers = arch.numLayers - arch.mtpLayers;
   let kBytes = 0, vBytes = 0;
   let nAttnCount = 0, nSWA = 0;
+  let maxPct = 0;
 
   if (arch.layerTypes) {
     for (const lt of arch.layerTypes) {
@@ -389,14 +402,20 @@ function calcKVCache(ctx, ubatch, arch, kBpp, vBpp) {
         const nKVH = arch.numGlobalKVHeads || arch.numKVHeads;
         const hDim = arch.globalHeadDim || arch.headDim;
         const nEmbK = nKVH * hDim;
-        kBytes += nEmbK * ctx * kBpp;
-        vBytes += nEmbK * ctx * vBpp;
+        const eKBpp = effectiveBpp(nEmbK, kBpp);
+        const eVBpp = effectiveBpp(nEmbK, vBpp);
+        maxPct = Math.max(maxPct, eKBpp.pct, eVBpp.pct);
+        kBytes += nEmbK * ctx * eKBpp.bpp;
+        vBytes += nEmbK * ctx * eVBpp.bpp;
         nAttnCount++;
       } else if (lt === 'sliding_attention') {
         const nEmbK = arch.numKVHeads * arch.headDim;
+        const eKBpp = effectiveBpp(nEmbK, kBpp);
+        const eVBpp = effectiveBpp(nEmbK, vBpp);
+        maxPct = Math.max(maxPct, eKBpp.pct, eVBpp.pct);
         const swaCtx = Math.min((arch.slidingWindow || ctx) + ubatch, ctx);
-        kBytes += nEmbK * swaCtx * kBpp;
-        vBytes += nEmbK * swaCtx * vBpp;
+        kBytes += nEmbK * swaCtx * eKBpp.bpp;
+        vBytes += nEmbK * swaCtx * eVBpp.bpp;
         nSWA++;
         nAttnCount++;
       }
@@ -404,13 +423,16 @@ function calcKVCache(ctx, ubatch, arch, kBpp, vBpp) {
   } else {
     const nAttnLayers = Math.floor(mainLayers / arch.fullAttnInterval);
     const nEmbK = arch.numKVHeads * arch.headDim;
-    kBytes = nEmbK * ctx * nAttnLayers * kBpp;
-    vBytes = nEmbK * ctx * nAttnLayers * vBpp;
+    const eKBpp = effectiveBpp(nEmbK, kBpp);
+    const eVBpp = effectiveBpp(nEmbK, vBpp);
+    maxPct = Math.max(maxPct, eKBpp.pct, eVBpp.pct);
+    kBytes = nEmbK * ctx * nAttnLayers * eKBpp.bpp;
+    vBytes = nEmbK * ctx * nAttnLayers * eVBpp.bpp;
     nAttnCount = nAttnLayers;
   }
 
   const totalBytes = kBytes + vBytes;
-  return { kGB: kBytes / 1e9, vGB: vBytes / 1e9, sizeGB: totalBytes / 1e9, nAttnLayers: nAttnCount, nSWA };
+  return { kGB: kBytes / 1e9, vGB: vBytes / 1e9, sizeGB: totalBytes / 1e9, nAttnLayers: nAttnCount, nSWA, padPct: maxPct };
 }
 
 function calcRecurrentState(arch, nRsSeq) {
@@ -427,15 +449,18 @@ function calcRecurrentState(arch, nRsSeq) {
 }
 
 function calcMtpKV(ctx, arch, mtpkBpp, mtpvBpp) {
-  if (!arch.mtpLayers) return { sizeGB: 0, kGB: 0, vGB: 0 };
-  const kBytes = ctx * arch.mtpLayers * arch.numKVHeads * arch.headDim * mtpkBpp;
-  const vBytes = ctx * arch.mtpLayers * arch.numKVHeads * arch.headDim * mtpvBpp;
-  return { sizeGB: (kBytes + vBytes) / 1e9, kGB: kBytes / 1e9, vGB: vBytes / 1e9 };
+  if (!arch.mtpLayers) return { sizeGB: 0, kGB: 0, vGB: 0, padPct: 0 };
+  const nEmbK = arch.numKVHeads * arch.headDim;
+  const eKBpp = effectiveBpp(nEmbK, mtpkBpp);
+  const eVBpp = effectiveBpp(nEmbK, mtpvBpp);
+  const kBytes = ctx * arch.mtpLayers * nEmbK * eKBpp.bpp;
+  const vBytes = ctx * arch.mtpLayers * nEmbK * eVBpp.bpp;
+  return { sizeGB: (kBytes + vBytes) / 1e9, kGB: kBytes / 1e9, vGB: vBytes / 1e9, padPct: Math.max(eKBpp.pct, eVBpp.pct) };
 }
 
 function calcComputeBuffer(ubatch, arch) {
   const n_vocab = arch.vocabSize || 128256;
-  const logitsBytes = n_vocab * ubatch * 2; 
+  const logitsBytes = n_vocab * ubatch * 2;
   const baseBytes = arch.isHybrid ? 0.8 * 1e9 : 0.5 * 1e9;
   return (logitsBytes + baseBytes) / 1e9;
 }
@@ -571,6 +596,7 @@ function check() {
   if (kv.sizeGB > 0) {
     let kvDetail = `K: ${kv.kGB.toFixed(2)}, V: ${kv.vGB.toFixed(2)}, ${kv.nAttnLayers} attn`;
     if (kv.nSWA > 0) kvDetail += `, ${kv.nSWA} SWA (win: ${arch.slidingWindow})`;
+    if (kv.padPct > 0) kvDetail += `, CUDA pad: +${kv.padPct.toFixed(1)}%`;
     metaLines += `<div>KV cache: ${kv.sizeGB.toFixed(2)} GB (${kvDetail})</div>`;
   }
   if (rs.sizeGB > 0) {
@@ -579,7 +605,9 @@ function check() {
   if (mtp.sizeGB > 0) {
     const mtpKLabel = document.getElementById('mtp-k-quant').selectedOptions[0].textContent.split(' ')[0];
     const mtpVLabel = document.getElementById('mtp-v-quant').selectedOptions[0].textContent.split(' ')[0];
-    metaLines += `<div>MTP draft KV: ${mtp.sizeGB.toFixed(2)} GB (K: ${mtp.kGB.toFixed(2)}, V: ${mtp.vGB.toFixed(2)}, ${arch.mtpLayers} layer, ${mtpKLabel}/${mtpVLabel})</div>`;
+    let mtpDetail = `K: ${mtp.kGB.toFixed(2)}, V: ${mtp.vGB.toFixed(2)}, ${arch.mtpLayers} layer, ${mtpKLabel}/${mtpVLabel}`;
+    if (mtp.padPct > 0) mtpDetail += `, CUDA pad: +${mtp.padPct.toFixed(1)}%`;
+    metaLines += `<div>MTP draft KV: ${mtp.sizeGB.toFixed(2)} GB (${mtpDetail})</div>`;
   }
   metaLines += `<div>Compute buffer (est): ${computeBuf.toFixed(1)} GB</div>`;
   metaLines += `<div style="margin-top: 0.5rem; font-weight: 600;">VRAM: ${vram} GB - ${reserveGB.toFixed(2)} GB reserve = ${usableGB.toFixed(2)} GB usable</div>`;
