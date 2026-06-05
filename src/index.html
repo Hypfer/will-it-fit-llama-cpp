@@ -349,8 +349,7 @@ function parseQuant(filename) {
 }
 
 function fmtCtx(n) {
-  if (n >= 1024) return `${n / 1024}K`;
-  return `${n}`;
+  return n.toLocaleString();
 }
 
 // KV cache: K + V split, each with own BPP
