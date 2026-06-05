@@ -255,6 +255,31 @@
     <option value="0.5625">iq4_nl (0.56 BPP)</option>
   </select>
 
+  <div id="mtp-section" style="display:none;">
+    <hr class="sidebar-sep" />
+    <label>MTP K cache quant</label>
+    <select id="mtp-k-quant">
+      <option value="2">fp16 (2.0 BPP)</option>
+      <option value="1.0625">q8_0 (1.06 BPP)</option>
+      <option value="0.75">q5_1 (0.75 BPP)</option>
+      <option value="0.6875">q5_0 (0.69 BPP)</option>
+      <option value="0.625">q4_1 (0.63 BPP)</option>
+      <option value="0.5625" selected>q4_0 (0.56 BPP)</option>
+      <option value="0.5625">iq4_nl (0.56 BPP)</option>
+    </select>
+
+    <label>MTP V cache quant</label>
+    <select id="mtp-v-quant">
+      <option value="2">fp16 (2.0 BPP)</option>
+      <option value="1.0625">q8_0 (1.06 BPP)</option>
+      <option value="0.75">q5_1 (0.75 BPP)</option>
+      <option value="0.6875">q5_0 (0.69 BPP)</option>
+      <option value="0.625">q4_1 (0.63 BPP)</option>
+      <option value="0.5625" selected>q4_0 (0.56 BPP)</option>
+      <option value="0.5625">iq4_nl (0.56 BPP)</option>
+    </select>
+  </div>
+
   <div class="footer-text">
     Grounded with <a href="https://github.com/ggml-org/llama.cpp/commit/0066404" target="_blank">llama.cpp 0066404</a><br>2026-06-04
   </div>
@@ -401,10 +426,11 @@ function calcRecurrentState(arch, nRsSeq) {
   return { sizeGB: totalBytes / 1e9, nRecurLayers, nAttnLayers };
 }
 
-function calcMtpKV(ctx, arch) {
-  if (!arch.mtpLayers) return { sizeGB: 0 };
-  const bytes = ctx * arch.mtpLayers * arch.numKVHeads * arch.headDim * 2 * 2.0;
-  return { sizeGB: bytes / 1e9 };
+function calcMtpKV(ctx, arch, mtpkBpp, mtpvBpp) {
+  if (!arch.mtpLayers) return { sizeGB: 0, kGB: 0, vGB: 0 };
+  const kBytes = ctx * arch.mtpLayers * arch.numKVHeads * arch.headDim * mtpkBpp;
+  const vBytes = ctx * arch.mtpLayers * arch.numKVHeads * arch.headDim * mtpvBpp;
+  return { sizeGB: (kBytes + vBytes) / 1e9, kGB: kBytes / 1e9, vGB: vBytes / 1e9 };
 }
 
 function calcComputeBuffer(ubatch, arch) {
@@ -451,6 +477,13 @@ async function loadModel() {
     }
     cachedArch = arch;
 
+    const mtpSection = document.getElementById('mtp-section');
+    if (arch && arch.mtpLayers > 0) {
+      mtpSection.style.display = 'block';
+    } else {
+      mtpSection.style.display = 'none';
+    }
+
     const slider = document.getElementById('ctx-slider');
     const ctxKey = cachedGGUF?.context_length;
     const nativeCtx = ctxKey ? parseInt(ctxKey) : 131072;
@@ -490,6 +523,8 @@ function check() {
   const ubatch = parseInt(document.getElementById('ubatch-slider').value);
   const kBpp = parseFloat(document.getElementById('k-quant').value);
   const vBpp = parseFloat(document.getElementById('v-quant').value);
+  const mtpkBpp = parseFloat(document.getElementById('mtp-k-quant').value);
+  const mtpvBpp = parseFloat(document.getElementById('mtp-v-quant').value);
 
   if (!vram || !ctx) {
     errorEl.textContent = 'Fill in VRAM and context';
@@ -511,7 +546,7 @@ function check() {
   const kv = arch ? calcKVCache(ctx, ubatch, arch, kBpp, vBpp) : { sizeGB: 0, kGB: 0, vGB: 0, nAttnLayers: 0 };
   const nRsSeq = arch && arch.mtpLayers ? 2 : 0;
   const rs = arch ? calcRecurrentState(arch, nRsSeq) : { sizeGB: 0, nRecurLayers: 0 };
-  const mtp = arch ? calcMtpKV(ctx, arch) : { sizeGB: 0 };
+  const mtp = arch ? calcMtpKV(ctx, arch, mtpkBpp, mtpvBpp) : { sizeGB: 0, kGB: 0, vGB: 0 };
   const computeBuf = arch ? calcComputeBuffer(ubatch, arch) : 1;
 
   const quantMap = {};
@@ -542,7 +577,9 @@ function check() {
     metaLines += `<div>Recurrent state: ${rs.sizeGB.toFixed(2)} GB (${rs.nRecurLayers} Mamba layers, ${nRsSeq} rs_seq)</div>`;
   }
   if (mtp.sizeGB > 0) {
-    metaLines += `<div>MTP draft KV: ${mtp.sizeGB.toFixed(2)} GB (${arch.mtpLayers} layer, fp16)</div>`;
+    const mtpKLabel = document.getElementById('mtp-k-quant').selectedOptions[0].textContent.split(' ')[0];
+    const mtpVLabel = document.getElementById('mtp-v-quant').selectedOptions[0].textContent.split(' ')[0];
+    metaLines += `<div>MTP draft KV: ${mtp.sizeGB.toFixed(2)} GB (K: ${mtp.kGB.toFixed(2)}, V: ${mtp.vGB.toFixed(2)}, ${arch.mtpLayers} layer, ${mtpKLabel}/${mtpVLabel})</div>`;
   }
   metaLines += `<div>Compute buffer (est): ${computeBuf.toFixed(1)} GB</div>`;
   metaLines += `<div style="margin-top: 0.5rem; font-weight: 600;">VRAM: ${vram} GB - ${reserveGB.toFixed(2)} GB reserve = ${usableGB.toFixed(2)} GB usable</div>`;
@@ -610,6 +647,10 @@ function check() {
 
   if (arch && arch.mtpLayers > 0) {
     cmd += ` --spec-type draft-mtp --spec-draft-n-max 2`;
+    const mtpKCacheType = document.getElementById('mtp-k-quant').selectedOptions[0].textContent.split(' ')[0];
+    const mtpVCacheType = document.getElementById('mtp-v-quant').selectedOptions[0].textContent.split(' ')[0];
+    if (mtpKCacheType !== 'fp16') cmd += ` --cache-type-k-draft ${mtpKCacheType}`;
+    if (mtpVCacheType !== 'fp16') cmd += ` --cache-type-v-draft ${mtpVCacheType}`;
   }
 
   const cmdEscaped = cmd.replace(/</g, '&lt;').replace(/>/g, '&gt;');
@@ -751,7 +792,7 @@ document.querySelectorAll('#vram').forEach(el => {
 });
 document.getElementById('reserve').addEventListener('change', check);
 document.getElementById('reserve').addEventListener('keydown', e => { if (e.key === 'Enter') check(); });
-document.querySelectorAll('#k-quant, #v-quant').forEach(el => {
+document.querySelectorAll('#k-quant, #v-quant, #mtp-k-quant, #mtp-v-quant').forEach(el => {
   el.addEventListener('change', check);
   el.addEventListener('keydown', e => { if (e.key === 'Enter') check(); });
 });
