@@ -302,9 +302,9 @@ const QUANT_ORDER = [
   'F32','BF16','F16','Q8_K_XL','UD-Q8_K_XL','Q8_0',
   'Q6_K_XL','UD-Q6_K_XL','Q6_K','UD-Q6_K',
   'Q5_K_XL','UD-Q5_K_XL','Q5_K_M','UD-Q5_K_M','Q5_K_S','UD-Q5_K_S',
-  'Q4_K_XL','UD-Q4_K_XL','Q4_1','Q4_K_M','UD-Q4_K_M','IQ4_NL','Q4_K_S','UD-Q4_K_S','Q4_0','IQ4_XS','UD-IQ4_XS',
+  'Q4_K_XL','UD-Q4_K_XL','Q4_1','Q4_K_M','UD-Q4_K_M','IQ4_NL','UD-IQ4_NL','Q4_K_S','UD-Q4_K_S','Q4_0','IQ4_XS','UD-IQ4_XS',
   'Q3_K_XL','UD-Q3_K_XL','Q3_K_M','UD-Q3_K_M','Q3_K_S','UD-Q3_K_S','IQ3_XXS','UD-IQ3_XXS','IQ3_S','UD-IQ3_S',
-  'Q2_K_XL','UD-Q2_K_XL','Q2_K','UD-Q2_K','IQ2_M','UD-IQ2_M','IQ2_XXS','UD-IQ2_XXS','IQ1_M','UD-IQ1_M',
+  'Q2_K_XL','UD-Q2_K_XL','Q2_K','UD-Q2_K','IQ2_M','UD-IQ2_M','IQ2_XXS','UD-IQ2_XXS','IQ1_M','UD-IQ1_M','IQ1_S','UD-IQ1_S',
 ];
 
 function sortQuants(quants) {
@@ -323,7 +323,7 @@ async function fetchJSON(url) {
 }
 
 async function getRepoFiles(repoId) {
-  return fetchJSON(`https://huggingface.co/api/models/${repoId}/tree/main`);
+  return fetchJSON(`https://huggingface.co/api/models/${repoId}/tree/main?recursive=true`);
 }
 
 async function getGGUFInfo(repoId) {
@@ -368,9 +368,13 @@ function extractArch(config) {
 }
 
 function parseQuant(filename) {
-  const base = filename.replace('.gguf', '').split('/').pop();
+  const base = filename.replace('.gguf', '').split('/').pop().replace(/-\d{5}-of-\d{5}$/i, '');
   const match = base.match(/(-?(?:UD-)?(?:IQ\d+_[A-Z0-9_]+|Q\d+_[A-Z0-9_]+|F\d+))$/i);
   return match ? match[1].toUpperCase().replace(/^-/, '') : base.toUpperCase();
+}
+
+function isFirstPart(filename) {
+  return /-00001-of-\d{5}$/i.test(filename.replace('.gguf', ''));
 }
 
 function fmtCtx(n) {
@@ -578,9 +582,9 @@ function check() {
   for (const f of ggufFiles) {
     const quant = parseQuant(f.path);
     const sizeGB = f.size / 1e9;
-    if (!quantMap[quant] || sizeGB > quantMap[quant].sizeGB) {
-      quantMap[quant] = { quant, sizeGB, file: f.path };
-    }
+    if (!quantMap[quant]) quantMap[quant] = { quant, sizeGB: 0, file: f.path };
+    quantMap[quant].sizeGB += sizeGB;
+    if (isFirstPart(f.path)) quantMap[quant].file = f.path;
   }
   const uniqueQuants = sortQuants(Object.values(quantMap));
   const reserveGB = parseFloat(document.getElementById('reserve').value) / 1024;
