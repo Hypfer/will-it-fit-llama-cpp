@@ -377,6 +377,16 @@ function isFirstPart(filename) {
   return /-00001-of-\d{5}$/i.test(filename.replace('.gguf', ''));
 }
 
+// Accept plain repo IDs ("org/model") or full HF URLs and return "org/model"
+function normalizeRepo(input) {
+  let s = (input || '').trim();
+  s = s.replace(/[?#].*$/, '');
+  s = s.replace(/^https?:\/\//i, '');
+  s = s.replace(/^(?:www\.)?(?:huggingface\.co|hf\.co)\//i, '');
+  const parts = s.split('/').filter(Boolean);
+  return parts.length >= 2 ? `${parts[0]}/${parts[1]}` : s;
+}
+
 function fmtCtx(n) {
   return n.toLocaleString();
 }
@@ -479,7 +489,9 @@ async function loadModel() {
   resultsEl.innerHTML = '';
   cmdContainer.innerHTML = '';
 
-  const repo = document.getElementById('repo').value.trim();
+  const repoInput = document.getElementById('repo');
+  const repo = normalizeRepo(repoInput.value);
+  repoInput.value = repo;
   if (!repo) {
     errorEl.textContent = 'Enter a repo ID';
     errorEl.style.display = 'block';
@@ -546,7 +558,7 @@ function check() {
     return;
   }
 
-  const repo = document.getElementById('repo').value.trim();
+  const repo = normalizeRepo(document.getElementById('repo').value);
   const vram = parseFloat(document.getElementById('vram').value);
   const ctx = parseInt(document.getElementById('ctx-slider').value);
   const ubatch = parseInt(document.getElementById('ubatch-slider').value);
