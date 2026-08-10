@@ -13,7 +13,7 @@
     --text-muted: #475569;
     --text-light: #64748b;
     --border-color: #e2e8f0;
-    
+
     --accent: #4f46e5;
     --accent-hover: #4338ca;
     --accent-bg: #e0e7ff;
@@ -29,23 +29,23 @@
 
   * { margin: 0; padding: 0; box-sizing: border-box; }
   html, body { height: 100%; }
-  body { 
-    font-family: 'SF Mono', 'Fira Code', ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; 
-    background: var(--bg-main); 
-    color: var(--text-main); 
-    display: flex; 
+  body {
+    font-family: 'SF Mono', 'Fira Code', ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+    background: var(--bg-main);
+    color: var(--text-main);
+    display: flex;
   }
 
   /* --- LAYOUT --- */
   #sidebar {
-    width: 340px; 
-    min-width: 340px; 
-    background: var(--bg-sidebar); 
+    width: 340px;
+    min-width: 340px;
+    background: var(--bg-sidebar);
     border-right: 1px solid var(--border-color);
-    padding: 1.5rem; 
-    overflow-y: auto; 
-    display: flex; 
-    flex-direction: column; 
+    padding: 1.5rem;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
     gap: 0.5rem;
   }
   #main { flex: 1; padding: 2rem; overflow-y: auto; min-width: 0; }
@@ -54,37 +54,37 @@
   h1 { font-size: 1.1rem; font-weight: 700; margin-bottom: 0.5rem; letter-spacing: -0.02em; color: var(--text-main); }
   .subtitle { font-weight: 400; font-size: 0.8em; color: var(--text-muted); }
   .intro-text { font-size: 0.75rem; color: var(--text-muted); line-height: 1.5; margin-bottom: 1.5rem; }
-  
-  label { 
-    display: block; 
-    font-size: 0.7rem; 
+
+  label {
+    display: block;
+    font-size: 0.7rem;
     font-weight: 600;
-    color: var(--text-muted); 
+    color: var(--text-muted);
     margin-top: 0.5rem;
-    margin-bottom: 0.25rem; 
-    text-transform: uppercase; 
-    letter-spacing: 0.05em; 
+    margin-bottom: 0.25rem;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
   }
 
   /* --- INPUTS & CONTROLS --- */
   input[type="text"], input[type="number"], select {
-    width: 100%; 
-    padding: 0.5rem 0.6rem; 
-    background: var(--bg-main); 
+    width: 100%;
+    padding: 0.5rem 0.6rem;
+    background: var(--bg-main);
     border: 1px solid #cbd5e1;
-    border-radius: 6px; 
-    color: var(--text-main); 
-    font-family: inherit; 
-    font-size: 0.85rem; 
+    border-radius: 6px;
+    color: var(--text-main);
+    font-family: inherit;
+    font-size: 0.85rem;
     transition: all 0.2s ease;
     box-shadow: 0 1px 2px rgba(0,0,0,0.02);
   }
-  input[type="text"]:focus, input[type="number"]:focus, select:focus { 
-    outline: none; 
-    border-color: var(--accent); 
-    box-shadow: 0 0 0 3px rgba(79, 70, 229, 0.15); 
+  input[type="text"]:focus, input[type="number"]:focus, select:focus {
+    outline: none;
+    border-color: var(--accent);
+    box-shadow: 0 0 0 3px rgba(79, 70, 229, 0.15);
   }
-  
+
   input[type="range"] {
     width: 100%; margin: 0 0 0.35rem; accent-color: var(--accent); height: 2rem; cursor: pointer;
   }
@@ -93,16 +93,16 @@
 
   /* --- BUTTONS --- */
   .btn {
-    padding: 0.6rem 1rem; 
-    background: var(--accent); 
-    border: none; 
+    padding: 0.6rem 1rem;
+    background: var(--accent);
+    border: none;
     border-radius: 6px;
-    color: #fff; 
+    color: #fff;
     font-weight: 600;
-    font-family: inherit; 
-    font-size: 0.85rem; 
-    cursor: pointer; 
-    width: 100%; 
+    font-family: inherit;
+    font-size: 0.85rem;
+    cursor: pointer;
+    width: 100%;
     margin-top: 0.5rem;
     transition: background 0.2s;
     box-shadow: 0 2px 4px rgba(79, 70, 229, 0.2);
@@ -112,22 +112,22 @@
 
   /* Presets */
   .preset-group { display: flex; flex-wrap: wrap; gap: 0.35rem; margin-bottom: 0.25rem; }
-  .preset-btn { 
-    padding: 0.3rem 0.6rem; 
-    background: var(--bg-main); 
-    border: 1px solid var(--border-color); 
-    border-radius: 4px; 
-    color: var(--text-muted); 
-    font-family: inherit; 
-    font-size: 0.75rem; 
-    cursor: pointer; 
+  .preset-btn {
+    padding: 0.3rem 0.6rem;
+    background: var(--bg-main);
+    border: 1px solid var(--border-color);
+    border-radius: 4px;
+    color: var(--text-muted);
+    font-family: inherit;
+    font-size: 0.75rem;
+    cursor: pointer;
     transition: all 0.15s;
   }
   .preset-btn:hover { border-color: #94a3b8; color: var(--text-main); }
-  .preset-btn.active { 
-    border-color: var(--accent); 
-    color: var(--accent-text); 
-    background: var(--accent-bg); 
+  .preset-btn.active {
+    border-color: var(--accent);
+    color: var(--accent-text);
+    background: var(--accent-bg);
     font-weight: 600;
   }
   .preset-label { font-size: 0.65rem; color: var(--text-light); text-transform: uppercase; letter-spacing: 0.05em; width: 100%; margin-top: 0.4rem; }
@@ -152,7 +152,7 @@
   th { font-size: 0.75rem; color: var(--text-light); text-transform: uppercase; letter-spacing: 0.05em; padding: 0.6rem 0.5rem; border-bottom: 2px solid var(--border-color); white-space: nowrap; }
   td { padding: 0.6rem 0.5rem; font-size: 0.85rem; border-bottom: 1px solid var(--border-color); color: var(--text-main); white-space: nowrap; }
   td:last-child, th:last-child { text-align: right; }
-  
+
   .table-link { color: var(--text-main); text-decoration: none; font-weight: 600; transition: color 0.15s; }
   .table-link:hover { color: var(--accent); text-decoration: underline; }
 
@@ -172,21 +172,24 @@
 
   /* --- COMMAND BOX --- */
   .cmd-label { font-size: 0.75rem; color: var(--text-light); text-transform: uppercase; letter-spacing: 0.05em; margin-top: 2rem; margin-bottom: 0.5rem; font-weight: 600; transition: color 0.2s; }
-  .cmd-box { background: #1e293b; color: #f8fafc; padding: 1rem; border-radius: 6px; font-family: inherit; font-size: 0.8rem; overflow-x: auto; white-space: nowrap; border: 1px solid #334155; cursor: pointer; position: relative; }
+  .cmd-box { background: #1e293b; color: #f8fafc; padding: 1rem; border-radius: 6px; font-family: inherit; font-size: 0.8rem; overflow-x: auto; white-space: pre-wrap; word-break: break-all; border: 1px solid #334155; cursor: pointer; position: relative; }
   .cmd-box:hover { border-color: #475569; }
   .cmd-box code { user-select: all; pointer-events: none; }
+
+  /* --- DFLASH INFO --- */
+  #dflash-info { font-size: 0.75rem; color: var(--text-muted); line-height: 1.4; margin-top: 0.25rem; }
 
   /* --- MOBILE FIX --- */
   @media (max-width: 768px) {
     html, body { height: auto; display: block; }
     body { flex-direction: column; }
-    #sidebar { 
-      width: 100%; 
-      min-width: 100%; 
-      border-right: none; 
-      border-bottom: 1px solid var(--border-color); 
-      overflow-y: visible; 
-      padding: 1.25rem; 
+    #sidebar {
+      width: 100%;
+      min-width: 100%;
+      border-right: none;
+      border-bottom: 1px solid var(--border-color);
+      overflow-y: visible;
+      padding: 1.25rem;
     }
     #main { padding: 1.25rem; overflow-y: visible; }
     .footer-text { margin-top: 1.5rem; }
@@ -216,7 +219,7 @@
 
   <label>System reserve (MB)</label>
   <input type="number" id="reserve" value="1024" step="64" min="0" />
-  
+
   <hr class="sidebar-sep" />
 
   <label>Context (n_ctx)</label>
@@ -280,8 +283,51 @@
     </select>
   </div>
 
+  <div id="dflash-section" style="display:none;">
+    <hr class="sidebar-sep" />
+    <label>DFlash draft model</label>
+    <div id="dflash-info"></div>
+    <label class="checkbox-label" style="flex-direction: row; align-items: center; gap: 0.5rem; text-transform: none; letter-spacing: 0; margin-top: 0.5rem; font-size: 0.8rem; color: var(--text-main); cursor: pointer;">
+      <input type="checkbox" id="dflash-toggle" style="width: auto; margin: 0;" checked />
+      Enable DFlash drafting
+    </label>
+    <label>DFlash K cache quant</label>
+    <select id="dflash-k-quant">
+      <option value="2">fp16 (2.0 BPP)</option>
+      <option value="1.0625" selected>q8_0 (1.06 BPP)</option>
+      <option value="0.75">q5_1 (0.75 BPP)</option>
+      <option value="0.6875">q5_0 (0.69 BPP)</option>
+      <option value="0.625">q4_1 (0.63 BPP)</option>
+      <option value="0.5625">q4_0 (0.56 BPP)</option>
+      <option value="0.5625">iq4_nl (0.56 BPP)</option>
+    </select>
+
+    <label>DFlash V cache quant</label>
+    <select id="dflash-v-quant">
+      <option value="2">fp16 (2.0 BPP)</option>
+      <option value="1.0625" selected>q8_0 (1.06 BPP)</option>
+      <option value="0.75">q5_1 (0.75 BPP)</option>
+      <option value="0.6875">q5_0 (0.69 BPP)</option>
+      <option value="0.625">q4_1 (0.63 BPP)</option>
+      <option value="0.5625">q4_0 (0.56 BPP)</option>
+      <option value="0.5625">iq4_nl (0.56 BPP)</option>
+    </select>
+  </div>
+
+  <div id="mmproj-section" style="display:none;">
+    <hr class="sidebar-sep" />
+    <label>Vision projector (mmproj)</label>
+    <div id="mmproj-info"></div>
+    <label>Mmproj offload</label>
+    <select id="mmproj-mode">
+      <option value="off" selected>Off (text only)</option>
+      <option value="cpu">CPU (--no-mmproj-offload)</option>
+      <option value="gpu">GPU (full weight cost)</option>
+    </select>
+  </div>
+
   <div class="footer-text">
-    Grounded with <a href="https://github.com/ggml-org/llama.cpp/commit/0066404" target="_blank">llama.cpp 0066404</a><br>2026-06-04
+    Grounded with <a href="https://github.com/ggml-org/llama.cpp/commit/d2f8305" target="_blank">llama.cpp d2f8305</a><br>2026-08-10
   </div>
 </div>
 
@@ -292,563 +338,9 @@
   <div id="cmd-container"></div>
 </div>
 
-<script>
-// Module-level cache - only re-fetch on repo change
-let cachedGGUF = null;
-let cachedFiles = null;
-let cachedArch = null;
-
-const QUANT_ORDER = [
-  'F32','BF16','F16','Q8_K_XL','UD-Q8_K_XL','Q8_0',
-  'Q6_K_XL','UD-Q6_K_XL','Q6_K','UD-Q6_K',
-  'Q5_K_XL','UD-Q5_K_XL','Q5_K_M','UD-Q5_K_M','Q5_K_S','UD-Q5_K_S',
-  'Q4_K_XL','UD-Q4_K_XL','Q4_1','Q4_K_M','UD-Q4_K_M','IQ4_NL','UD-IQ4_NL','Q4_K_S','UD-Q4_K_S','Q4_0','IQ4_XS','UD-IQ4_XS',
-  'Q3_K_XL','UD-Q3_K_XL','Q3_K_M','UD-Q3_K_M','Q3_K_S','UD-Q3_K_S','IQ3_XXS','UD-IQ3_XXS','IQ3_S','UD-IQ3_S',
-  'Q2_K_XL','UD-Q2_K_XL','Q2_K','UD-Q2_K','IQ2_M','UD-IQ2_M','IQ2_XXS','UD-IQ2_XXS','IQ1_M','UD-IQ1_M','IQ1_S','UD-IQ1_S',
-];
-
-function sortQuants(quants) {
-  return quants.sort((a, b) => {
-    const ia = QUANT_ORDER.indexOf(a.quant);
-    const ib = QUANT_ORDER.indexOf(b.quant);
-    return (ia === -1 ? 999 : ia) - (ib === -1 ? 999 : ib);
-  });
-}
-
-
-async function fetchJSON(url) {
-  const r = await fetch(url);
-  if (!r.ok) throw new Error(`HF API ${r.status}: ${url}`);
-  return r.json();
-}
-
-async function getRepoFiles(repoId) {
-  return fetchJSON(`https://huggingface.co/api/models/${repoId}/tree/main?recursive=true`);
-}
-
-async function getGGUFInfo(repoId) {
-  const meta = await fetchJSON(`https://huggingface.co/api/models/${repoId}?expand[]=gguf`);
-  return meta.gguf || null;
-}
-
-async function getBaseModelConfig(repoId) {
-  const info = await fetchJSON(`https://huggingface.co/api/models/${repoId}`);
-  const baseTag = (info.tags || []).find(t => typeof t === 'string' && t.startsWith('base_model:'));
-  if (!baseTag) return null;
-  const baseModel = baseTag.replace('base_model:', '').split(':')[0];
-  return fetchJSON(`https://huggingface.co/${baseModel}/raw/main/config.json`);
-}
-
-function extractArch(config) {
-  const c = config.text_config || config;
-  const mtpLayers = c.mtp_num_hidden_layers || 0;
-  const numLayers = (c.num_hidden_layers || 0) + mtpLayers;
-  // Per-layer attention types (Gemma 4, etc.)
-  const layerTypes = c.layer_types || null;
-  return {
-    hiddenSize: c.hidden_size,
-    numLayers,
-    numAttnHeads: c.num_attention_heads,
-    numKVHeads: c.num_key_value_heads || c.num_attention_heads,
-    headDim: c.head_dim || (c.hidden_size / c.num_attention_heads),
-    // Gemma 4: full-attention layers use global KV heads + head dim
-    numGlobalKVHeads: c.num_global_key_value_heads || null,
-    globalHeadDim: c.global_head_dim || null,
-    slidingWindow: c.sliding_window || 0,
-    layerTypes,
-    fullAttnInterval: c.full_attention_interval || 1,
-    ssmDConv: c.ssm_d_conv || c.linear_conv_kernel_dim,
-    ssmDInner: c.ssm_d_inner || c.linear_num_value_heads * c.linear_value_head_dim,
-    ssmDState: c.ssm_d_state,
-    ssmNGroup: c.ssm_n_group || c.linear_num_key_heads,
-    isHybrid: !!(c.full_attention_interval && c.full_attention_interval > 1),
-    mtpLayers,
-    vocabSize: c.vocab_size || 128256,
-  };
-}
-
-function parseQuant(filename) {
-  const base = filename.replace('.gguf', '').split('/').pop().replace(/-\d{5}-of-\d{5}$/i, '');
-  const match = base.match(/(-?(?:UD-)?(?:IQ\d+_[A-Z0-9_]+|Q\d+_[A-Z0-9_]+|F\d+))$/i);
-  return match ? match[1].toUpperCase().replace(/^-/, '') : base.toUpperCase();
-}
-
-function isFirstPart(filename) {
-  return /-00001-of-\d{5}$/i.test(filename.replace('.gguf', ''));
-}
-
-// Accept plain repo IDs ("org/model") or full HF URLs and return "org/model"
-function normalizeRepo(input) {
-  let s = (input || '').trim();
-  s = s.replace(/[?#].*$/, '');
-  s = s.replace(/^https?:\/\//i, '');
-  s = s.replace(/^(?:www\.)?(?:huggingface\.co|hf\.co)\//i, '');
-  const parts = s.split('/').filter(Boolean);
-  return parts.length >= 2 ? `${parts[0]}/${parts[1]}` : s;
-}
-
-function fmtCtx(n) {
-  return n.toLocaleString();
-}
-
-// CUDA MATRIX_ROW_PADDING: quantized tensors pad ne0 to next 512 boundary
-// F16/F32 are not quantized types, so they get no padding
-// Returns { bpp, pct } where pct is the overhead percentage (0 if none)
-function effectiveBpp(rowElems, bpp) {
-  if (rowElems % 512 === 0 || bpp >= 2) return { bpp, pct: 0 };
-  const padElems = 512 - (rowElems % 512);
-  const padBytes = padElems * bpp;
-  const rawBytes = rowElems * bpp;
-  const pct = (padBytes / rawBytes) * 100;
-  return { bpp: bpp * (1 + padBytes / rawBytes), pct };
-}
-
-// KV cache: K + V split, each with own BPP
-function calcKVCache(ctx, ubatch, arch, kBpp, vBpp) {
-  const mainLayers = arch.numLayers - arch.mtpLayers;
-  let kBytes = 0, vBytes = 0;
-  let nAttnCount = 0, nSWA = 0;
-  let maxPct = 0;
-
-  if (arch.layerTypes) {
-    for (const lt of arch.layerTypes) {
-      if (lt === 'full_attention') {
-        const nKVH = arch.numGlobalKVHeads || arch.numKVHeads;
-        const hDim = arch.globalHeadDim || arch.headDim;
-        const nEmbK = nKVH * hDim;
-        const eKBpp = effectiveBpp(nEmbK, kBpp);
-        const eVBpp = effectiveBpp(nEmbK, vBpp);
-        maxPct = Math.max(maxPct, eKBpp.pct, eVBpp.pct);
-        kBytes += nEmbK * ctx * eKBpp.bpp;
-        vBytes += nEmbK * ctx * eVBpp.bpp;
-        nAttnCount++;
-      } else if (lt === 'sliding_attention') {
-        const nEmbK = arch.numKVHeads * arch.headDim;
-        const eKBpp = effectiveBpp(nEmbK, kBpp);
-        const eVBpp = effectiveBpp(nEmbK, vBpp);
-        maxPct = Math.max(maxPct, eKBpp.pct, eVBpp.pct);
-        const swaCtx = Math.min((arch.slidingWindow || ctx) + ubatch, ctx);
-        kBytes += nEmbK * swaCtx * eKBpp.bpp;
-        vBytes += nEmbK * swaCtx * eVBpp.bpp;
-        nSWA++;
-        nAttnCount++;
-      }
-    }
-  } else {
-    const nAttnLayers = Math.floor(mainLayers / arch.fullAttnInterval);
-    const nEmbK = arch.numKVHeads * arch.headDim;
-    const eKBpp = effectiveBpp(nEmbK, kBpp);
-    const eVBpp = effectiveBpp(nEmbK, vBpp);
-    maxPct = Math.max(maxPct, eKBpp.pct, eVBpp.pct);
-    kBytes = nEmbK * ctx * nAttnLayers * eKBpp.bpp;
-    vBytes = nEmbK * ctx * nAttnLayers * eVBpp.bpp;
-    nAttnCount = nAttnLayers;
-  }
-
-  const totalBytes = kBytes + vBytes;
-  return { kGB: kBytes / 1e9, vGB: vBytes / 1e9, sizeGB: totalBytes / 1e9, nAttnLayers: nAttnCount, nSWA, padPct: maxPct };
-}
-
-function calcRecurrentState(arch, nRsSeq) {
-  if (!arch.isHybrid || !arch.ssmDState) return { sizeGB: 0, nRecurLayers: 0 };
-  const nMain = arch.numLayers - arch.mtpLayers;
-  const nAttnLayers = Math.floor(nMain / arch.fullAttnInterval);
-  const nRecurLayers = nMain - nAttnLayers;
-  const embdR = (arch.ssmDConv - 1) * (arch.ssmDInner + 2 * arch.ssmNGroup * arch.ssmDState);
-  const embdS = arch.ssmDState * arch.ssmDInner;
-  const nRows = 1 + nRsSeq;
-  const bytesPerLayer = (embdR + embdS) * nRows * 4;
-  const totalBytes = nRecurLayers * bytesPerLayer;
-  return { sizeGB: totalBytes / 1e9, nRecurLayers, nAttnLayers };
-}
-
-function calcMtpKV(ctx, arch, mtpkBpp, mtpvBpp) {
-  if (!arch.mtpLayers) return { sizeGB: 0, kGB: 0, vGB: 0, padPct: 0 };
-  const nEmbK = arch.numKVHeads * arch.headDim;
-  const eKBpp = effectiveBpp(nEmbK, mtpkBpp);
-  const eVBpp = effectiveBpp(nEmbK, mtpvBpp);
-  const kBytes = ctx * arch.mtpLayers * nEmbK * eKBpp.bpp;
-  const vBytes = ctx * arch.mtpLayers * nEmbK * eVBpp.bpp;
-  return { sizeGB: (kBytes + vBytes) / 1e9, kGB: kBytes / 1e9, vGB: vBytes / 1e9, padPct: Math.max(eKBpp.pct, eVBpp.pct) };
-}
-
-function calcComputeBuffer(ubatch, arch) {
-  const n_vocab = arch.vocabSize || 128256;
-  const logitsBytes = n_vocab * ubatch * 2;
-  const baseBytes = arch.isHybrid ? 0.8 * 1e9 : 0.5 * 1e9;
-  return (logitsBytes + baseBytes) / 1e9;
-}
-
-async function loadModel() {
-  const errorEl = document.getElementById('error');
-  const metaEl = document.getElementById('meta');
-  const resultsEl = document.getElementById('results');
-  const cmdContainer = document.getElementById('cmd-container');
-  errorEl.style.display = 'none';
-  metaEl.innerHTML = '';
-  resultsEl.innerHTML = '';
-  cmdContainer.innerHTML = '';
-
-  const repoInput = document.getElementById('repo');
-  const repo = normalizeRepo(repoInput.value);
-  repoInput.value = repo;
-  if (!repo) {
-    errorEl.textContent = 'Enter a repo ID';
-    errorEl.style.display = 'block';
-    return;
-  }
-
-  const btn = document.getElementById('load');
-  btn.textContent = 'Loading metadata...';
-  btn.disabled = true;
-
-  try {
-    const wasCached = !!cachedGGUF;
-    cachedGGUF = await getGGUFInfo(repo);
-    cachedFiles = await getRepoFiles(repo);
-
-    let arch = null;
-    try {
-      const baseConfig = await getBaseModelConfig(repo);
-      if (baseConfig) arch = extractArch(baseConfig);
-    } catch (e) { console.warn('Config fetch failed:', e); }
-    // Base model config may have MTP info even when the GGUF repo doesn't include MTP tensors
-    if (arch && !repo.toUpperCase().includes('MTP')) {
-      arch.mtpLayers = 0;
-    }
-    cachedArch = arch;
-
-    const mtpSection = document.getElementById('mtp-section');
-    if (arch && arch.mtpLayers > 0) {
-      mtpSection.style.display = 'block';
-    } else {
-      mtpSection.style.display = 'none';
-    }
-
-    const slider = document.getElementById('ctx-slider');
-    const ctxKey = cachedGGUF?.context_length;
-    const nativeCtx = ctxKey ? parseInt(ctxKey) : 131072;
-    slider.max = nativeCtx;
-    const currentCtx = parseInt(slider.value);
-    slider.value = wasCached ? Math.min(currentCtx, nativeCtx) : nativeCtx;
-    document.getElementById('ctx-display').textContent = fmtCtx(parseInt(slider.value));
-
-    check();
-
-  } catch (e) {
-    errorEl.textContent = e.message;
-    errorEl.style.display = 'block';
-  } finally {
-    btn.textContent = 'Load Model Metadata';
-    btn.disabled = false;
-  }
-}
-
-function check() {
-  const errorEl = document.getElementById('error');
-  const metaEl = document.getElementById('meta');
-  const resultsEl = document.getElementById('results');
-  errorEl.style.display = 'none';
-  metaEl.innerHTML = '';
-  resultsEl.innerHTML = '';
-
-  if (!cachedGGUF || !cachedFiles) {
-    errorEl.textContent = 'Load model first (click "Load Model Metadata")';
-    errorEl.style.display = 'block';
-    return;
-  }
-
-  const repo = normalizeRepo(document.getElementById('repo').value);
-  const vram = parseFloat(document.getElementById('vram').value);
-  const ctx = parseInt(document.getElementById('ctx-slider').value);
-  const ubatch = parseInt(document.getElementById('ubatch-slider').value);
-  const kBpp = parseFloat(document.getElementById('k-quant').value);
-  const vBpp = parseFloat(document.getElementById('v-quant').value);
-  const mtpkBpp = parseFloat(document.getElementById('mtp-k-quant').value);
-  const mtpvBpp = parseFloat(document.getElementById('mtp-v-quant').value);
-
-  if (!vram || !ctx) {
-    errorEl.textContent = 'Fill in VRAM and context';
-    errorEl.style.display = 'block';
-    return;
-  }
-
-  const ggufFiles = cachedFiles
-    .filter(f => f.path.endsWith('.gguf') && !f.path.startsWith('mmproj') && !f.path.startsWith('imatrix'))
-    .sort((a, b) => b.size - a.size);
-
-  if (!ggufFiles.length) {
-    errorEl.textContent = 'No GGUF files found in this repo.';
-    errorEl.style.display = 'block';
-    return;
-  }
-
-  const arch = cachedArch;
-  const kv = arch ? calcKVCache(ctx, ubatch, arch, kBpp, vBpp) : { sizeGB: 0, kGB: 0, vGB: 0, nAttnLayers: 0 };
-  const nRsSeq = arch && arch.mtpLayers ? 2 : 0;
-  const rs = arch ? calcRecurrentState(arch, nRsSeq) : { sizeGB: 0, nRecurLayers: 0 };
-  const mtp = arch ? calcMtpKV(ctx, arch, mtpkBpp, mtpvBpp) : { sizeGB: 0, kGB: 0, vGB: 0 };
-  const computeBuf = arch ? calcComputeBuffer(ubatch, arch) : 1;
-
-  const quantMap = {};
-  for (const f of ggufFiles) {
-    const quant = parseQuant(f.path);
-    const sizeGB = f.size / 1e9;
-    if (!quantMap[quant]) quantMap[quant] = { quant, sizeGB: 0, file: f.path };
-    quantMap[quant].sizeGB += sizeGB;
-    if (isFirstPart(f.path)) quantMap[quant].file = f.path;
-  }
-  const uniqueQuants = sortQuants(Object.values(quantMap));
-  const reserveGB = parseFloat(document.getElementById('reserve').value) / 1024;
-  const usableGB = vram - reserveGB;
-
-  const archName = cachedGGUF?.architecture || 'unknown';
-  const ctxDisplay = fmtCtx(ctx);
-  const kLabel = document.getElementById('k-quant').selectedOptions[0].textContent;
-  const vLabel = document.getElementById('v-quant').selectedOptions[0].textContent;
-
-  let metaLines = `<div><strong>${repo}</strong></div>`;
-  metaLines += `<div>Arch: ${archName} | Context: ${ctxDisplay} | K: ${kLabel} | V: ${vLabel}</div>`;
-  if (kv.sizeGB > 0) {
-    let kvDetail = `K: ${kv.kGB.toFixed(2)}, V: ${kv.vGB.toFixed(2)}, ${kv.nAttnLayers} attn`;
-    if (kv.nSWA > 0) kvDetail += `, ${kv.nSWA} SWA (win: ${arch.slidingWindow})`;
-    if (kv.padPct > 0) kvDetail += `, CUDA pad: +${kv.padPct.toFixed(1)}%`;
-    metaLines += `<div>KV cache: ${kv.sizeGB.toFixed(2)} GB (${kvDetail})</div>`;
-  }
-  if (rs.sizeGB > 0) {
-    metaLines += `<div>Recurrent state: ${rs.sizeGB.toFixed(2)} GB (${rs.nRecurLayers} Mamba layers, ${nRsSeq} rs_seq)</div>`;
-  }
-  if (mtp.sizeGB > 0) {
-    const mtpKLabel = document.getElementById('mtp-k-quant').selectedOptions[0].textContent.split(' ')[0];
-    const mtpVLabel = document.getElementById('mtp-v-quant').selectedOptions[0].textContent.split(' ')[0];
-    let mtpDetail = `K: ${mtp.kGB.toFixed(2)}, V: ${mtp.vGB.toFixed(2)}, ${arch.mtpLayers} layer, ${mtpKLabel}/${mtpVLabel}`;
-    if (mtp.padPct > 0) mtpDetail += `, CUDA pad: +${mtp.padPct.toFixed(1)}%`;
-    metaLines += `<div>MTP draft KV: ${mtp.sizeGB.toFixed(2)} GB (${mtpDetail})</div>`;
-  }
-  metaLines += `<div>Compute buffer (est): ${computeBuf.toFixed(1)} GB</div>`;
-  metaLines += `<div style="margin-top: 0.5rem; font-weight: 600;">VRAM: ${vram} GB - ${reserveGB.toFixed(2)} GB reserve = ${usableGB.toFixed(2)} GB usable</div>`;
-  metaEl.innerHTML = metaLines;
-
-  let html = `<div class="result-header">${uniqueQuants.length} quants found &middot; <a href="https://huggingface.co/${repo}/tree/main" target="_blank">browse files &rarr;</a></div>`;
-  
-  // Wrapper for horizontal scrolling on mobile
-  html += `<div class="table-container"><table><thead><tr><th>Quant</th><th>Weights</th><th>K</th><th>V</th><th>RS</th><th>MTP</th><th>Compute</th><th>Total</th><th>Status</th></tr></thead><tbody>`;
-
-  let addedSep = false;
-  for (const q of uniqueQuants) {
-    const total = q.sizeGB + kv.sizeGB + rs.sizeGB + mtp.sizeGB + computeBuf;
-    const fits = total <= usableGB;
-    const tight = total > usableGB * 0.9 && fits;
-    const headroom = usableGB - total;
-
-    let badgeClass, badgeText, statusClass;
-    if (fits) {
-      if (tight) {
-        badgeClass = 'badge-warn'; badgeText = 'tight'; statusClass = 'fit-warn';
-      } else {
-        badgeClass = 'badge-yes'; badgeText = 'fits'; statusClass = 'fit-yes';
-      }
-    } else {
-      badgeClass = 'badge-no'; badgeText = 'over'; statusClass = 'fit-no';
-    }
-
-    const isLowQ = /(?:(?:UD-)?Q[23]|IQ[23])/i.test(q.quant);
-    if (isLowQ && !addedSep) {
-      html += `<tr class="row-sep"><td colspan="9" class="sep-label">Noticeable degradation beyond this point</td></tr>`;
-      addedSep = true;
-    }
-
-    html += `<tr>
-      <td><span class="badge ${badgeClass}">${badgeText}</span> <a href="https://huggingface.co/${repo}/blob/main/${q.file}" target="_blank" class="table-link">${q.quant}</a></td>
-      <td>${q.sizeGB.toFixed(1)} GB</td>
-      <td>${kv.kGB.toFixed(1)}</td>
-      <td>${kv.vGB.toFixed(1)}</td>
-      <td>${rs.sizeGB.toFixed(1)}</td>
-      <td>${mtp.sizeGB.toFixed(1)}</td>
-      <td>${computeBuf.toFixed(1)}</td>
-      <td style="font-weight: 600;">${total.toFixed(1)} GB</td>
-      <td class="${statusClass}">
-        ${fits
-          ? `<span class="headroom">${headroom.toFixed(1)} GB free</span>`
-          : `+${Math.abs(headroom).toFixed(1)} GB over`
-        }
-      </td>
-    </tr>`;
-  }
-
-  html += `</tbody></table></div>`;
-  resultsEl.innerHTML = html;
-
-  // Generate CLI command
-  const cmdContainer = document.getElementById('cmd-container');
-  const kCacheType = document.getElementById('k-quant').selectedOptions[0].textContent.split(' ')[0];
-  const vCacheType = document.getElementById('v-quant').selectedOptions[0].textContent.split(' ')[0];
-  const modelPlaceholder = repo.split('/').pop().replace('-GGUF', '');
-
-  let cmd = `llama-server -m ./models/<${modelPlaceholder}_Q...>.gguf -c ${ctx} -ub ${ubatch} -ngl 999 -fa`;
-  if (kCacheType !== 'fp16') cmd += ` --cache-type-k ${kCacheType}`;
-  if (vCacheType !== 'fp16') cmd += ` --cache-type-v ${vCacheType}`;
-
-  if (arch && arch.mtpLayers > 0) {
-    cmd += ` --spec-type draft-mtp --spec-draft-n-max 2`;
-    const mtpKCacheType = document.getElementById('mtp-k-quant').selectedOptions[0].textContent.split(' ')[0];
-    const mtpVCacheType = document.getElementById('mtp-v-quant').selectedOptions[0].textContent.split(' ')[0];
-    if (mtpKCacheType !== 'fp16') cmd += ` --cache-type-k-draft ${mtpKCacheType}`;
-    if (mtpVCacheType !== 'fp16') cmd += ` --cache-type-v-draft ${mtpVCacheType}`;
-  }
-
-  const cmdEscaped = cmd.replace(/</g, '&lt;').replace(/>/g, '&gt;');
-  cmdContainer.innerHTML = `
-    <div class="cmd-label" id="cmd-label">Ready to run (Click box to copy)</div>
-    <div class="cmd-box" id="cmd-box" title="Click to copy to clipboard"><code>${cmdEscaped}</code></div>
-    <div style="font-size: 0.75rem; color: var(--text-light); margin-top: 0.5rem; font-style: italic;">For best results, take this as just a starting point and play around with it.</div>
-  `;
-
-  // Add real copy-to-clipboard functionality
-  document.getElementById('cmd-box').addEventListener('click', function() {
-    navigator.clipboard.writeText(cmd).then(() => {
-      const label = document.getElementById('cmd-label');
-      const originalText = 'Ready to run (Click box to copy)';
-      label.innerText = 'Copied to clipboard! ✓';
-      label.style.color = 'var(--success-text)';
-      setTimeout(() => {
-        label.innerText = originalText;
-        label.style.color = 'var(--text-light)';
-      }, 2000);
-    });
-  });
-}
-
-// Data
-const GPU_PRESETS = [
-  ['RTX PRO 6000', 96],
-  ['H100', 80],
-  ['RTX 5090', 32],
-  ['RTX 4090 / 3090', 24],
-  ['RTX 5080 / 4080', 16],
-  ['RTX 5070 / 3060', 12],
-  ['RTX 5060 / 4060', 8],
-];
-
-const MODEL_PRESETS = [
-  ['Qwen3.6 27B MTP', 'unsloth/Qwen3.6-27B-MTP-GGUF'],
-  ['Qwen3.6 27B', 'unsloth/Qwen3.6-27B-GGUF'],
-  ['Gemma4 31B', 'unsloth/gemma-4-31b-it-GGUF'],
-  ['Granite 30B', 'unsloth/granite-4.1-30b-GGUF'],
-  ['Gemma4 12B', 'unsloth/gemma-4-12b-it-GGUF'],
-  ['Qwen3.5 9B', 'unsloth/Qwen3.5-9B-GGUF'],
-  ['Granite 8B', 'unsloth/granite-4.1-8b-GGUF'],
-  ['Gemma4 E4B', 'unsloth/gemma-4-E4B-it-GGUF'],
-  ['Qwen3.5 4B', 'unsloth/Qwen3.5-4B-GGUF'],
-  ['Granite 3B', 'unsloth/granite-4.1-3b-GGUF'],
-];
-const MODEL_PRESETS_MOE = [
-  ['Qwen3.6 35B A3B', 'unsloth/Qwen3.6-35B-A3B-GGUF'],
-  ['Gemma4 26B A4B', 'unsloth/gemma-4-26B-A4B-it-GGUF'],
-];
-
-// Build presets
-(function buildPresets() {
-  const gpuContainer = document.getElementById('gpu-presets');
-  for (const [label, vram] of GPU_PRESETS) {
-    const btn = document.createElement('button');
-    btn.className = 'preset-btn';
-    btn.textContent = label;
-    btn.addEventListener('click', () => {
-      document.getElementById('vram').value = vram;
-      gpuContainer.querySelectorAll('.preset-btn').forEach(b => b.classList.remove('active'));
-      btn.classList.add('active');
-      if (cachedGGUF) check();
-    });
-    gpuContainer.appendChild(btn);
-  }
-  gpuContainer.children[3].classList.add('active');
-
-  const modelContainer = document.getElementById('model-presets');
-  const denseLabel = document.createElement('span');
-  denseLabel.className = 'preset-label';
-  denseLabel.textContent = 'Dense';
-  modelContainer.appendChild(denseLabel);
-  for (const [label, repo] of MODEL_PRESETS) {
-    const btn = document.createElement('button');
-    btn.className = 'preset-btn';
-    btn.textContent = label;
-    btn.addEventListener('click', () => {
-      document.getElementById('repo').value = repo;
-      modelContainer.querySelectorAll('.preset-btn').forEach(b => b.classList.remove('active'));
-      btn.classList.add('active');
-      loadModel();
-    });
-    modelContainer.appendChild(btn);
-  }
-  const moeLabel = document.createElement('span');
-  moeLabel.className = 'preset-label';
-  moeLabel.textContent = 'Mixture of Experts';
-  modelContainer.appendChild(moeLabel);
-  for (const [label, repo] of MODEL_PRESETS_MOE) {
-    const btn = document.createElement('button');
-    btn.className = 'preset-btn';
-    btn.textContent = label;
-    btn.addEventListener('click', () => {
-      document.getElementById('repo').value = repo;
-      modelContainer.querySelectorAll('.preset-btn').forEach(b => b.classList.remove('active'));
-      btn.classList.add('active');
-      loadModel();
-    });
-    modelContainer.appendChild(btn);
-  }
-  const initialRepo = document.getElementById('repo').value;
-  const allPresets = [...MODEL_PRESETS, ...MODEL_PRESETS_MOE];
-  for (let i = 0; i < allPresets.length; i++) {
-    if (allPresets[i][1] === initialRepo) {
-      const btnIdx = i < MODEL_PRESETS.length ? i + 1 : i + 2;
-      modelContainer.children[btnIdx].classList.add('active');
-      break;
-    }
-  }
-})();
-
-// Events
-const ctxSlider = document.getElementById('ctx-slider');
-const ctxDisplay = document.getElementById('ctx-display');
-ctxSlider.addEventListener('input', () => {
-  ctxDisplay.textContent = fmtCtx(parseInt(ctxSlider.value));
-  check();
-});
-
-const ubatchSlider = document.getElementById('ubatch-slider');
-const ubatchDisplay = document.getElementById('ubatch-display');
-ubatchSlider.addEventListener('input', () => {
-  ubatchDisplay.textContent = ubatchSlider.value;
-  check();
-});
-
-document.getElementById('repo').addEventListener('keydown', e => {
-  if (e.key === 'Enter') loadModel();
-});
-
-document.querySelectorAll('#vram').forEach(el => {
-  el.addEventListener('change', () => {
-    document.querySelectorAll('#gpu-presets .preset-btn').forEach(b => b.classList.remove('active'));
-    check();
-  });
-  el.addEventListener('keydown', e => { if (e.key === 'Enter') check(); });
-});
-document.getElementById('reserve').addEventListener('change', check);
-document.getElementById('reserve').addEventListener('keydown', e => { if (e.key === 'Enter') check(); });
-document.querySelectorAll('#k-quant, #v-quant, #mtp-k-quant, #mtp-v-quant').forEach(el => {
-  el.addEventListener('change', check);
-  el.addEventListener('keydown', e => { if (e.key === 'Enter') check(); });
-});
-document.getElementById('repo').addEventListener('input', () => {
-  document.querySelectorAll('#model-presets .preset-btn').forEach(b => b.classList.remove('active'));
-});
-
-document.getElementById('load').addEventListener('click', loadModel);
-
-window.addEventListener('DOMContentLoaded', () => {
-  loadModel();
-});
+<script type="module">
+  import { init } from './js/app.js';
+  init();
 </script>
 </body>
 </html>

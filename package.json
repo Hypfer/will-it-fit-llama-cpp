@@ -1,0 +1,10 @@
+{
+  "name": "will-it-fit-llama-cpp",
+  "version": "1.0.0",
+  "description": "llama.cpp VRAM estimator for normal people",
+  "type": "module",
+  "scripts": {
+    "test": "node --test tests/estimator.test.js tests/gguf-parser.test.js tests/command-builder.test.js"
+  },
+  "license": "MIT"
+}
