@@ -81,6 +81,40 @@ test('buildCommand handles both MTP and DFlash (MTP takes precedence in flags)',
   assert.ok(cmd.includes('draft-dflash'));
 });
 
+test('buildCommand adds MTP sidecar flags (draft-mtp + -md, no cache-type-draft)', () => {
+  const cmd = buildCommand({
+    repo: 'unsloth/gemma-4-26B-A4B-it-GGUF',
+    ctx: 131072, ubatch: 512,
+    kCacheType: 'q8_0', vCacheType: 'q8_0',
+    arch: { mtpLayers: 0 },
+    mtp: null,
+    dflash: null,
+    mtpSidecar: { fileName: 'mtp-gemma-4-26B-A4B-it.gguf' },
+  });
+  assert.ok(cmd.includes('--spec-type draft-mtp'), 'should have draft-mtp spec type');
+  assert.ok(cmd.includes('--spec-draft-n-max 2'), 'should have spec-draft-n-max 2');
+  assert.ok(cmd.includes('-md ./models/<mtp-gemma-4-26B-A4B-it.gguf>'), 'should point -md at sidecar');
+  // Shared KV: no draft cache-type flags
+  assert.ok(!cmd.includes('--cache-type-k-draft'), 'should NOT have cache-type-k-draft (shared KV)');
+  assert.ok(!cmd.includes('--cache-type-v-draft'), 'should NOT have cache-type-v-draft (shared KV)');
+});
+
+test('buildCommand MTP sidecar is mutually exclusive with embedded MTP', () => {
+  // When arch.mtpLayers > 0 (embedded head), the sidecar branch is suppressed
+  const cmd = buildCommand({
+    repo: 'unsloth/Foo-GGUF',
+    ctx: 8192, ubatch: 512,
+    kCacheType: 'q8_0', vCacheType: 'q8_0',
+    arch: { mtpLayers: 1 },
+    mtp: { kCacheType: 'q4_0', vCacheType: 'q4_0' },
+    mtpSidecar: { fileName: 'mtp-sidecar.gguf' },
+  });
+  // Embedded MTP should fire, sidecar should NOT
+  assert.ok(cmd.includes('draft-mtp'));
+  assert.ok(cmd.includes('--cache-type-k-draft q4_0'), 'embedded MTP cache flags should be present');
+  assert.ok(!cmd.includes('-md ./models/<mtp-sidecar.gguf>'), 'sidecar -md should be suppressed');
+});
+
 test('buildCommand adds mmproj flags for GPU offload', () => {
   const cmd = buildCommand({
     repo: 'unsloth/Foo-GGUF',

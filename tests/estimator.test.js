@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {
   QUANT_ORDER, sortQuants, parseQuant, isFirstPart, normalizeRepo,
   effectiveBpp, extractArch, calcKVCache, calcMtpKV, calcComputeBuffer,
-  calcMmprojCompute, estimateVram,
+  calcMmprojCompute, calcMtpDraftCompute, estimateVram,
 } from '../src/js/vram-estimator.js';
 
 // ---------------------------------------------------------------------------
@@ -302,6 +302,61 @@ test('estimateVram uses independent dflash K/V BPP when provided', () => {
     `DFlash draft KV at q4_0 (${estDraft.dflash.kv.sizeGB}) should be < q8_0 (${estMain.dflash.kv.sizeGB})`);
   assert.ok(estDraft.dflash.total < estMain.dflash.total,
     `DFlash total at q4_0 (${estDraft.dflash.total}) should be < q8_0 (${estMain.dflash.total})`);
+});
+
+// ---------------------------------------------------------------------------
+// Gemma4 MTP sidecar compute buffer (shared KV, zero draft KV)
+// ---------------------------------------------------------------------------
+
+const GEMMA4_MTP_SIDECAR_ARCH = {
+  numLayers: 4,
+  hiddenSize: 1024,
+  nEmbdOut: 2816,
+  sharedKvLayers: 4, // all layers share KV — zero draft KV
+  vocabSize: 262144,
+};
+
+test('calcMtpDraftCompute returns 0 for null arch', () => {
+  assert.equal(calcMtpDraftCompute(512, null), 0);
+});
+
+test('calcMtpDraftCompute estimates logits + base for gemma4-assistant', () => {
+  const compute = calcMtpDraftCompute(512, GEMMA4_MTP_SIDECAR_ARCH);
+  // logits = 262144 * 512 * 2 = 0.268 GB, base = 0.25 GB -> ~0.52 GB
+  assert.ok(compute > 0.4, `compute was ${compute}, expected > 0.4`);
+  assert.ok(compute < 0.7, `compute was ${compute}, expected < 0.7`);
+});
+
+test('estimateVram includes MTP sidecar weights + compute (no KV)', () => {
+  const ggufFiles = [{ path: 'model-UD-Q4_K_XL.gguf', size: 16e9 }];
+  const est = estimateVram({
+    ggufFiles,
+    ctx: 131072, ubatch: 512,
+    arch: GLIMMER_ARCH,
+    kBpp: 1.0625, vBpp: 1.0625,
+    mtpkBpp: 0.5625, mtpvBpp: 0.5625,
+    mtpSidecar: { sizeGB: 0.46, arch: GEMMA4_MTP_SIDECAR_ARCH },
+  });
+
+  assert.ok(est.mtpSidecar, 'mtpSidecar should be present in result');
+  assert.ok(est.mtpSidecar.total > 0.46, `total was ${est.mtpSidecar.total}, expected > 0.46 (weights + compute)`);
+  assert.ok(est.mtpSidecar.computeGB > 0, 'compute buffer should be non-zero');
+  // Total = weights (0.46) + compute (~0.52), so ~0.98
+  assert.ok(Math.abs(est.mtpSidecar.total - (0.46 + est.mtpSidecar.computeGB)) < 0.01, 'total should be weights + compute');
+
+  // Per-quant total should include the sidecar cost
+  const q4 = est.quants[0];
+  assert.ok(q4.total > 16 + 0.9, 'per-quant total should include MTP sidecar');
+});
+
+test('estimateVram with no mtpSidecar returns null', () => {
+  const ggufFiles = [{ path: 'model-Q4_K_M.gguf', size: 16e9 }];
+  const est = estimateVram({
+    ggufFiles, ctx: 8192, ubatch: 512,
+    arch: GLIMMER_ARCH,
+    kBpp: 1.0625, vBpp: 1.0625,
+  });
+  assert.equal(est.mtpSidecar, null);
 });
 
 // ---------------------------------------------------------------------------

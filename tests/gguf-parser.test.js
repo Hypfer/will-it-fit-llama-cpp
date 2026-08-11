@@ -3,12 +3,13 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
-import { parseGgufHeader, extractDflashArch, extractClipArch } from '../src/js/gguf-parser.js';
+import { parseGgufHeader, extractDflashArch, extractClipArch, extractMtpArch } from '../src/js/gguf-parser.js';
 
 // Use the real GGUF header bytes (committed as test fixtures)
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const HEADER_BYTES = readFileSync(join(__dirname, 'fixtures', 'dflash_header.bin'));
 const MMPROJ_BYTES = readFileSync(join(__dirname, 'fixtures', 'mmproj_header.bin'));
+const MTP_SIDECAR_BYTES = readFileSync(join(__dirname, 'fixtures', 'mtp_sidecar_header.bin'));
 
 test('parseGgufHeader reads magic and version', () => {
   const { magic, version, nTensors, nKV } = parseGgufHeader(HEADER_BYTES);
@@ -112,4 +113,48 @@ test('extractClipArch builds vision encoder params', () => {
 test('extractClipArch returns null for non-CLIP metadata', () => {
   assert.equal(extractClipArch({ 'general.architecture': 'llama' }), null);
   assert.equal(extractClipArch({}), null);
+});
+
+// ---------------------------------------------------------------------------
+// Gemma4 MTP sidecar (gemma4-assistant) header parsing
+// ---------------------------------------------------------------------------
+
+test('parseGgufHeader reads gemma4-assistant architecture metadata', () => {
+  const { metadata } = parseGgufHeader(MTP_SIDECAR_BYTES);
+  assert.equal(metadata['general.architecture'], 'gemma4-assistant');
+});
+
+test('parseGgufHeader reads gemma4-assistant MTP params', () => {
+  const { metadata } = parseGgufHeader(MTP_SIDECAR_BYTES);
+  assert.equal(metadata['gemma4-assistant.block_count'], 4);
+  assert.equal(metadata['gemma4-assistant.embedding_length'], 1024);
+  assert.equal(metadata['gemma4-assistant.embedding_length_out'], 2816);
+  assert.equal(metadata['gemma4-assistant.attention.shared_kv_layers'], 4);
+  assert.equal(metadata['gemma4-assistant.nextn_predict_layers'], 4);
+});
+
+test('parseGgufHeader reads gemma4-assistant attention params', () => {
+  const { metadata } = parseGgufHeader(MTP_SIDECAR_BYTES);
+  assert.equal(metadata['gemma4-assistant.attention.head_count'], 16);
+  assert.deepEqual(metadata['gemma4-assistant.attention.head_count_kv'], [8, 8, 8, 2]);
+  assert.equal(metadata['gemma4-assistant.attention.key_length'], 512);
+  assert.equal(metadata['gemma4-assistant.attention.sliding_window'], 1024);
+  assert.deepEqual(metadata['gemma4-assistant.attention.sliding_window_pattern'], [true, true, true, false]);
+});
+
+test('extractMtpArch builds architecture object from gemma4-assistant header', () => {
+  const { metadata } = parseGgufHeader(MTP_SIDECAR_BYTES);
+  const arch = extractMtpArch(metadata);
+  assert.equal(arch.numLayers, 4);
+  assert.equal(arch.hiddenSize, 1024);
+  assert.equal(arch.nEmbdOut, 2816);
+  assert.equal(arch.sharedKvLayers, 4);
+  // All layers share KV — sharedKvLayers == numLayers means zero draft KV
+  assert.equal(arch.sharedKvLayers, arch.numLayers);
+});
+
+test('extractMtpArch returns null for non-gemma4-assistant model', () => {
+  assert.equal(extractMtpArch({ 'general.architecture': 'llama' }), null);
+  assert.equal(extractMtpArch({ 'general.architecture': 'gemma4' }), null);
+  assert.equal(extractMtpArch({}), null);
 });

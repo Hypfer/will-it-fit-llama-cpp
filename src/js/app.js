@@ -2,7 +2,7 @@ import {
   QUANT_ORDER, sortQuants, parseQuant, isFirstPart, normalizeRepo,
   extractArch, estimateVram, calcMmprojCompute,
 } from './vram-estimator.js';
-import { parseGgufHeader, extractDflashArch, extractClipArch } from './gguf-parser.js';
+import { parseGgufHeader, extractDflashArch, extractClipArch, extractMtpArch } from './gguf-parser.js';
 import { buildCommand } from './command-builder.js';
 
 // ---------------------------------------------------------------------------
@@ -13,6 +13,7 @@ let cachedFiles = null;
 let cachedArch = null;
 let cachedDflash = null;   // { fileName, sizeGB, arch } or null
 let cachedMmproj = null;   // { fileName, sizeGB, clipArch } or null (best variant)
+let cachedMtpSidecar = null; // { fileName, sizeGB, arch } or null
 
 const HF_BASE = 'https://huggingface.co';
 
@@ -87,17 +88,69 @@ async function loadDflashSidecar(repoId, files) {
     const { metadata } = parseGgufHeader(buf);
     const arch = extractDflashArch(metadata);
     cachedDflash = {
-      fileName, sizeGB, arch,
+      fileName, sizeGB, arch, path: sidecar.path,
       headerError: arch ? null : 'No dflash.* metadata found in header',
     };
   } catch (e) {
     console.warn('DFlash header parse failed:', e);
     cachedDflash = {
-      fileName, sizeGB, arch: null,
+      fileName, sizeGB, arch: null, path: sidecar.path,
       headerError: e.message,
     };
   }
   return cachedDflash;
+}
+
+// ---------------------------------------------------------------------------
+// Gemma4 MTP sidecar detection
+// ---------------------------------------------------------------------------
+
+/**
+ * Find the Gemma4 MTP sidecar in the repo file tree.
+ * Detection: root-level `mtp-*.gguf` (unsloth convention, the prepacked Q8_0
+ * default) is preferred; otherwise fall back to `MTP/mtp-*.gguf` (the larger
+ * per-quant variants). Matches the DFlash root-level convention.
+ */
+function findMtpSidecar(files) {
+  const rootLevel = files.find(f =>
+    f.path.startsWith('mtp-') && f.path.endsWith('.gguf')
+  );
+  if (rootLevel) return rootLevel;
+  return files.find(f =>
+    f.path.startsWith('MTP/mtp-') && f.path.endsWith('.gguf')
+  );
+}
+
+/**
+ * Detect + parse the Gemma4 MTP sidecar: fetch its GGUF header and extract arch.
+ * Sets `cachedMtpSidecar`. Called during loadModel().
+ */
+async function loadMtpSidecar(repoId, files) {
+  const sidecar = findMtpSidecar(files);
+  if (!sidecar) {
+    cachedMtpSidecar = null;
+    return null;
+  }
+
+  const fileName = sidecar.path.split('/').pop();
+  const sizeGB = sidecar.size / 1e9;
+
+  try {
+    const buf = await fetchGgufHeaderBytes(repoId, sidecar.path);
+    const { metadata } = parseGgufHeader(buf);
+    const arch = extractMtpArch(metadata);
+    cachedMtpSidecar = {
+      fileName, sizeGB, arch, path: sidecar.path,
+      headerError: arch ? null : 'No gemma4-assistant.* metadata found in header',
+    };
+  } catch (e) {
+    console.warn('MTP sidecar header parse failed:', e);
+    cachedMtpSidecar = {
+      fileName, sizeGB, arch: null, path: sidecar.path,
+      headerError: e.message,
+    };
+  }
+  return cachedMtpSidecar;
 }
 
 // ---------------------------------------------------------------------------
@@ -140,9 +193,10 @@ async function loadMmprojSidecar(repoId, files) {
   cachedMmproj = {
     fileName: best.path.split('/').pop(),
     sizeGB: best.size / 1e9,
+    path: best.path,
     clipArch: null,
     headerError: null,
-    allVariants: mmprojFiles.map(f => ({ name: f.path.split('/').pop(), sizeGB: f.size / 1e9 })),
+    allVariants: mmprojFiles.map(f => ({ name: f.path.split('/').pop(), sizeGB: f.size / 1e9, path: f.path })),
   };
 
   // Range-fetch the header and parse CLIP vision encoder params
@@ -215,6 +269,9 @@ async function loadModel() {
       // Detect mmproj sidecar
       await loadMmprojSidecar(repo, cachedFiles);
 
+    // Detect + parse Gemma4 MTP sidecar
+    await loadMtpSidecar(repo, cachedFiles);
+
     // Show/hide MTP section
     const mtpSection = document.getElementById('mtp-section');
     if (arch && arch.mtpLayers > 0) {
@@ -230,12 +287,33 @@ async function loadModel() {
       if (cachedDflash) {
         const info = document.getElementById('dflash-info');
         if (info) {
-          let txt = `${cachedDflash.fileName} (${cachedDflash.sizeGB.toFixed(1)} GB)`;
+          const url = `${HF_BASE}/${repo}/blob/main/${cachedDflash.path}`;
+          let txt = `<a href="${url}" target="_blank" class="sidecar-link">${cachedDflash.fileName}</a> (${cachedDflash.sizeGB.toFixed(1)} GB)`;
           if (cachedDflash.arch) {
             const a = cachedDflash.arch;
             txt += ` — ${a.numLayers} layers, ${a.numKVHeads} KV heads × ${a.headDim}`;
           }
-          info.textContent = txt;
+          info.innerHTML = txt;
+        }
+      }
+    }
+
+    // Show/hide Gemma4 MTP sidecar section
+    const mtpSidecarSection = document.getElementById('mtp-sidecar-section');
+    if (mtpSidecarSection) {
+      mtpSidecarSection.style.display = cachedMtpSidecar ? 'block' : 'none';
+      if (cachedMtpSidecar) {
+        const info = document.getElementById('mtp-sidecar-info');
+        if (info) {
+          const url = `${HF_BASE}/${repo}/blob/main/${cachedMtpSidecar.path}`;
+          let txt = `<a href="${url}" target="_blank" class="sidecar-link">${cachedMtpSidecar.fileName}</a> (${cachedMtpSidecar.sizeGB.toFixed(2)} GB)`;
+          if (cachedMtpSidecar.arch) {
+            const a = cachedMtpSidecar.arch;
+            txt += ` — ${a.numLayers} MTP layers`;
+          } else if (cachedMtpSidecar.headerError) {
+            txt += ` — header parse failed: ${cachedMtpSidecar.headerError}`;
+          }
+          info.innerHTML = txt;
         }
       }
     }
@@ -247,11 +325,12 @@ async function loadModel() {
       if (cachedMmproj) {
         const info = document.getElementById('mmproj-info');
         if (info) {
-          let html = `<div><strong>${cachedMmproj.fileName}</strong> (${cachedMmproj.sizeGB.toFixed(2)} GB)</div>`;
+          const url = `${HF_BASE}/${repo}/blob/main/${cachedMmproj.path}`;
+          let html = `<div><a href="${url}" target="_blank" class="sidecar-link">${cachedMmproj.fileName}</a> (${cachedMmproj.sizeGB.toFixed(2)} GB)</div>`;
           if (cachedMmproj.allVariants && cachedMmproj.allVariants.length > 1) {
             const others = cachedMmproj.allVariants
               .filter(v => v.name !== cachedMmproj.fileName)
-              .map(v => `${v.name} <span style="color: var(--text-light);">${v.sizeGB.toFixed(1)} GB</span>`)
+              .map(v => `<a href="${HF_BASE}/${repo}/blob/main/${v.path}" target="_blank" class="sidecar-link">${v.name}</a> <span style="color: var(--text-light);">${v.sizeGB.toFixed(1)} GB</span>`)
               .join(' &middot; ');
             html += `<div style="font-size: 0.7rem; color: var(--text-light); margin-top: 0.2rem;">${others}</div>`;
           }
@@ -354,9 +433,20 @@ function check() {
       mmprojGpuGB = cachedMmproj.sizeGB + mmprojComputeGB;
     }
 
+    // Gemma4 MTP sidecar (only if toggle is on; mutually exclusive with embedded MTP)
+    const mtpSidecarEnabled = document.getElementById('mtp-sidecar-toggle')?.checked ?? false;
+    let mtpSidecarInput = null;
+    if (cachedMtpSidecar && mtpSidecarEnabled && !(arch && arch.mtpLayers > 0)) {
+      mtpSidecarInput = {
+        sizeGB: cachedMtpSidecar.sizeGB,
+        arch: cachedMtpSidecar.arch,
+      };
+    }
+
     const estimate = estimateVram({
       ggufFiles, ctx, ubatch, arch, kBpp, vBpp, mtpkBpp, mtpvBpp,
       dflash: dflashInput, dflashkBpp, dflashvBpp,
+      mtpSidecar: mtpSidecarInput,
     });
 
     renderMeta(repo, vram, ctx, arch, estimate, ubatch, mmprojGpuGB, mmprojComputeGB);
@@ -403,17 +493,32 @@ function renderMeta(repo, vram, ctx, arch, est, ubatch, mmprojGpuGB = 0, mmprojC
     let dflashDetail = `${d.sizeGB.toFixed(2)} GB weights`;
     if (d.kv && d.kv.sizeGB > 0) dflashDetail += ` + ${d.kv.sizeGB.toFixed(2)} GB KV (${dflashKLabel}/${dflashVLabel})`;
     else if (cachedDflash && cachedDflash.headerError) dflashDetail += ` + ? GB KV (estimate failed: ${cachedDflash.headerError})`;
-    metaLines += `<div>DFlash draft: ${dflashDetail} (${d.fileName || 'sidecar'})</div>`;
+    const dflashLink = cachedDflash?.path
+      ? `<a href="${HF_BASE}/${repo}/blob/main/${cachedDflash.path}" target="_blank" class="sidecar-link">${d.fileName || 'sidecar'}</a>`
+      : (d.fileName || 'sidecar');
+    metaLines += `<div>DFlash draft: ${dflashDetail} (${dflashLink})</div>`;
+  }
+  if (est.mtpSidecar && est.mtpSidecar.total > 0) {
+    const m = est.mtpSidecar;
+    let detail = `${m.sizeGB.toFixed(2)} GB weights`;
+    if (m.computeGB > 0.001) detail += ` + ${m.computeGB.toFixed(2)} GB compute`;
+    const mtpLink = cachedMtpSidecar?.path
+      ? `<a href="${HF_BASE}/${repo}/blob/main/${cachedMtpSidecar.path}" target="_blank" class="sidecar-link">${m.fileName || 'sidecar'}</a>`
+      : (m.fileName || 'sidecar');
+    metaLines += `<div>Gemma4 MTP draft: ${detail} (${mtpLink})</div>`;
   }
   if (cachedMmproj) {
     const mmprojMode = document.getElementById('mmproj-mode').value;
+    const mmprojLink = cachedMmproj.path
+      ? `<a href="${HF_BASE}/${repo}/blob/main/${cachedMmproj.path}" target="_blank" class="sidecar-link">${cachedMmproj.fileName}</a>`
+      : cachedMmproj.fileName;
     if (mmprojMode === 'gpu') {
       let detail = `${cachedMmproj.sizeGB.toFixed(2)} GB weights`;
       if (mmprojComputeGB > 0.001) detail += ` + ${mmprojComputeGB.toFixed(2)} GB compute`;
       else if (cachedMmproj.headerError) detail += ` + ? GB compute (estimate failed: ${cachedMmproj.headerError})`;
-      metaLines += `<div>mmproj (GPU): ${mmprojGpuGB.toFixed(2)} GB (${detail}, ${cachedMmproj.fileName})</div>`;
+      metaLines += `<div>mmproj (GPU): ${mmprojGpuGB.toFixed(2)} GB (${detail}, ${mmprojLink})</div>`;
     } else if (mmprojMode === 'cpu') {
-      metaLines += `<div>mmproj (CPU): ${cachedMmproj.sizeGB.toFixed(2)} GB — 0 GB GPU (--no-mmproj-offload)</div>`;
+      metaLines += `<div>mmproj (CPU): ${cachedMmproj.sizeGB.toFixed(2)} GB — 0 GB GPU (--no-mmproj-offload) (${mmprojLink})</div>`;
     }
   }
   metaLines += `<div>Compute buffer (est): ${computeBuf.toFixed(1)} GB</div>`;
@@ -428,11 +533,13 @@ function renderResults(repo, est, vram, mmprojGpuGB = 0) {
   const { quants, kv, rs, mtp, computeBuf } = est;
 
   const showMmprojCol = mmprojGpuGB > 0;
+  const showMtpSidecarCol = !!(est.mtpSidecar && est.mtpSidecar.total > 0);
   let html = `<div class="result-header">${quants.length} quants found &middot; <a href="https://huggingface.co/${repo}/tree/main" target="_blank">browse files &rarr;</a></div>`;
-  html += `<div class="table-container"><table><thead><tr><th>Quant</th><th>Weights</th><th>K</th><th>V</th><th>RS</th><th>MTP</th><th>DFlash</th>${showMmprojCol ? '<th>mmproj</th>' : ''}<th>Compute</th><th>Total</th><th>Status</th></tr></thead><tbody>`;
+  html += `<div class="table-container"><table><thead><tr><th>Quant</th><th>Weights</th><th>K</th><th>V</th><th>RS</th><th>MTP</th><th>DFlash</th>${showMtpSidecarCol ? '<th>MTP draft</th>' : ''}${showMmprojCol ? '<th>mmproj</th>' : ''}<th>Compute</th><th>Total</th><th>Status</th></tr></thead><tbody>`;
 
   const dflashGB = est.dflash && est.dflash.total ? est.dflash.total : 0;
-  const nCols = showMmprojCol ? 11 : 10;
+  const mtpSidecarGB = showMtpSidecarCol ? est.mtpSidecar.total : 0;
+  const nCols = 10 + (showMtpSidecarCol ? 1 : 0) + (showMmprojCol ? 1 : 0);
 
   let addedSep = false;
   for (const q of quants) {
@@ -466,6 +573,7 @@ function renderResults(repo, est, vram, mmprojGpuGB = 0) {
       <td>${rs.sizeGB.toFixed(1)}</td>
       <td>${mtp.sizeGB.toFixed(1)}</td>
       <td>${dflashGB.toFixed(1)}</td>
+      ${showMtpSidecarCol ? `<td>${mtpSidecarGB.toFixed(1)}</td>` : ''}
       ${showMmprojCol ? `<td>${mmprojGpuGB.toFixed(1)}</td>` : ''}
       <td>${computeBuf.toFixed(1)}</td>
       <td style="font-weight: 600;">${total.toFixed(1)} GB</td>
@@ -501,6 +609,12 @@ function renderCommand(repo, ctx, ubatch, arch) {
     };
   }
 
+  // Gemma4 MTP sidecar: only when toggled on and no embedded MTP (mutually exclusive)
+  let mtpSidecar = null;
+  if (cachedMtpSidecar && (document.getElementById('mtp-sidecar-toggle')?.checked ?? false) && !(arch && arch.mtpLayers > 0)) {
+    mtpSidecar = { fileName: cachedMtpSidecar.fileName };
+  }
+
   // mmproj: build options based on the 3-state dropdown
   let mmproj = null;
   if (cachedMmproj) {
@@ -513,7 +627,7 @@ function renderCommand(repo, ctx, ubatch, arch) {
     }
   }
 
-  const cmd = buildCommand({ repo, ctx, ubatch, kCacheType, vCacheType, arch, mtp, dflash, mmproj });
+  const cmd = buildCommand({ repo, ctx, ubatch, kCacheType, vCacheType, arch, mtp, dflash, mtpSidecar, mmproj });
 
   const cmdEscaped = cmd.replace(/</g, '&lt;').replace(/>/g, '&gt;');
   cmdContainer.innerHTML = `
@@ -658,7 +772,7 @@ function wireEvents() {
   });
   document.getElementById('reserve').addEventListener('change', check);
   document.getElementById('reserve').addEventListener('keydown', e => { if (e.key === 'Enter') check(); });
-  document.querySelectorAll('#k-quant, #v-quant, #mtp-k-quant, #mtp-v-quant, #dflash-k-quant, #dflash-v-quant, #dflash-toggle, #mmproj-mode').forEach(el => {
+  document.querySelectorAll('#k-quant, #v-quant, #mtp-k-quant, #mtp-v-quant, #dflash-k-quant, #dflash-v-quant, #dflash-toggle, #mtp-sidecar-toggle, #mmproj-mode').forEach(el => {
     el.addEventListener('change', check);
     el.addEventListener('keydown', e => { if (e.key === 'Enter') check(); });
   });

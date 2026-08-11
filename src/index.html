@@ -178,6 +178,9 @@
 
   /* --- DFLASH INFO --- */
   #dflash-info { font-size: 0.75rem; color: var(--text-muted); line-height: 1.4; margin-top: 0.25rem; }
+  #mtp-sidecar-info { font-size: 0.75rem; color: var(--text-muted); line-height: 1.4; margin-top: 0.25rem; }
+  .sidecar-link { color: var(--text-main); text-decoration: none; font-weight: 600; transition: color 0.15s; }
+  .sidecar-link:hover { color: var(--accent); text-decoration: underline; }
 
   /* --- MOBILE FIX --- */
   @media (max-width: 768px) {
@@ -312,6 +315,16 @@
       <option value="0.5625">q4_0 (0.56 BPP)</option>
       <option value="0.5625">iq4_nl (0.56 BPP)</option>
     </select>
+  </div>
+
+  <div id="mtp-sidecar-section" style="display:none;">
+    <hr class="sidebar-sep" />
+    <label>Gemma4 MTP draft model</label>
+    <div id="mtp-sidecar-info"></div>
+    <label class="checkbox-label" style="flex-direction: row; align-items: center; gap: 0.5rem; text-transform: none; letter-spacing: 0; margin-top: 0.5rem; font-size: 0.8rem; color: var(--text-main); cursor: pointer;">
+      <input type="checkbox" id="mtp-sidecar-toggle" style="width: auto; margin: 0;" checked />
+      Enable MTP drafting
+    </label>
   </div>
 
   <div id="mmproj-section" style="display:none;">

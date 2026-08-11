@@ -6,7 +6,7 @@ export const QUANT_ORDER = [
   'F32','BF16','F16','Q8_K_XL','UD-Q8_K_XL','Q8_0',
   'Q6_K_XL','UD-Q6_K_XL','Q6_K','UD-Q6_K',
   'Q5_K_XL','UD-Q5_K_XL','Q5_K_L','UD-Q5_K_L','Q5_K_M','UD-Q5_K_M','Q5_K_S','UD-Q5_K_S',
-  'Q4_K_XL','UD-Q4_K_XL','Q4_1','Q4_K_M','UD-Q4_K_M','IQ4_NL','UD-IQ4_NL','Q4_K_S','UD-Q4_K_S','Q4_0','IQ4_XS','UD-IQ4_XS',
+  'Q4_K_XL','UD-Q4_K_XL','Q4_1','Q4_K_M','UD-Q4_K_M','Q4_K_S','UD-Q4_K_S','IQ4_NL','UD-IQ4_NL','Q4_0','IQ4_XS','UD-IQ4_XS',
   'Q3_K_XL','UD-Q3_K_XL','Q3_K_M','UD-Q3_K_M','Q3_K_S','UD-Q3_K_S','IQ3_M','UD-IQ3_M','IQ3_XXS','UD-IQ3_XXS','IQ3_S','UD-IQ3_S',
   'Q2_K_XL','UD-Q2_K_XL','Q2_K','UD-Q2_K','IQ2_M','UD-IQ2_M','IQ2_XS','UD-IQ2_XS','IQ2_XXS','UD-IQ2_XXS','IQ1_M','UD-IQ1_M','IQ1_S','UD-IQ1_S',
 ];
@@ -230,6 +230,27 @@ export function calcMmprojCompute(clipArch) {
 }
 
 /**
+ * Gemma4 MTP sidecar compute buffer estimate.
+ *
+ * The sidecar (gemma4-assistant) shares the target's KV cache, so it has zero
+ * draft KV. The only extra VRAM beyond the sidecar weights is a draft compute
+ * buffer: the draft context calls llama_decode (speculative.cpp:1489) and needs
+ * a logits tensor [vocab × ubatch] plus a small base buffer, same shape as the
+ * main model's compute buffer.
+ *
+ * @param {number} ubatch     - physical batch size (n_ubatch)
+ * @param {object} mtpArch    - from extractMtpArch() { vocabSize, ... }
+ * @returns {number} compute buffer size in GB
+ */
+export function calcMtpDraftCompute(ubatch, mtpArch) {
+  if (!mtpArch) return 0;
+  const n_vocab = mtpArch.vocabSize || 262144;
+  const logitsBytes = n_vocab * ubatch * 2; // fp16 logits
+  const baseBytes = 0.25 * 1e9; // small base (4 layers, lightweight)
+  return (logitsBytes + baseBytes) / 1e9;
+}
+
+/**
  * Aggregate all per-quant VRAM totals for a given model config + user settings.
  *
  * @param {object} opts
@@ -244,10 +265,11 @@ export function calcMmprojCompute(clipArch) {
  * @param {object} [opts.dflash]       - DFlash sidecar {arch, sizeGB} or null
  * @param {number} [opts.dflashkBpp]   - DFlash K cache BPP (defaults to main kBpp)
  * @param {number} [opts.dflashvBpp]   - DFlash V cache BPP (defaults to main vBpp)
- * @returns {{quants, kv, rs, mtp, dflash, computeBuf}}
+ * @param {object} [opts.mtpSidecar]   - Gemma4 MTP sidecar {arch, sizeGB} or null
+ * @returns {{quants, kv, rs, mtp, dflash, mtpSidecar, computeBuf}}
  */
 export function estimateVram(opts) {
-  const { ggufFiles, ctx, ubatch, arch, kBpp, vBpp, mtpkBpp, mtpvBpp, dflash } = opts;
+  const { ggufFiles, ctx, ubatch, arch, kBpp, vBpp, mtpkBpp, mtpvBpp, dflash, mtpSidecar } = opts;
   const dflashkBpp = opts.dflashkBpp ?? kBpp;
   const dflashvBpp = opts.dflashvBpp ?? vBpp;
 
@@ -276,6 +298,12 @@ export function estimateVram(opts) {
     dflashTotal = dflash.sizeGB;
   }
 
+  // Gemma4 MTP sidecar: weights + draft compute buffer (zero KV — shared with target)
+  const mtpSidecarCompute = mtpSidecar && mtpSidecar.arch
+    ? calcMtpDraftCompute(ubatch, mtpSidecar.arch)
+    : 0;
+  const mtpSidecarTotal = mtpSidecar ? (mtpSidecar.sizeGB + mtpSidecarCompute) : 0;
+
   // Per-quant totals
   const quantMap = {};
   for (const f of ggufFiles) {
@@ -288,8 +316,14 @@ export function estimateVram(opts) {
 
   const quants = sortQuants(Object.values(quantMap)).map(q => ({
     ...q,
-    total: q.sizeGB + kv.sizeGB + rs.sizeGB + mtp.sizeGB + dflashTotal + computeBuf,
+    total: q.sizeGB + kv.sizeGB + rs.sizeGB + mtp.sizeGB + dflashTotal + mtpSidecarTotal + computeBuf,
   }));
 
-  return { quants, kv, rs, mtp, dflash: { ...dflash, kv: dflashKV, total: dflashTotal }, computeBuf };
+  return {
+    quants, kv, rs, mtp, computeBuf,
+    dflash: { ...dflash, kv: dflashKV, total: dflashTotal },
+    mtpSidecar: mtpSidecar
+      ? { ...mtpSidecar, computeGB: mtpSidecarCompute, total: mtpSidecarTotal }
+      : null,
+  };
 }

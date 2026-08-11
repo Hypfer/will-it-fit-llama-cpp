@@ -8,6 +8,7 @@
  * @property {object|null} arch         - main model architecture (from extractArch)
  * @property {object|null} mtp          - MTP options {kCacheType, vCacheType} or null
  * @property {object|null} dflash       - DFlash sidecar {fileName, kCacheType, vCacheType} or null
+ * @property {object|null} mtpSidecar   - Gemma4 MTP sidecar {fileName} or null (shared KV)
  * @property {object|null} mmproj       - mmproj options {fileName, cpuOnly} or null
  */
 
@@ -18,7 +19,7 @@
  * @returns {string} the full command, ready to copy-paste
  */
 export function buildCommand(cfg) {
-  const { repo, ctx, ubatch, kCacheType, vCacheType, arch, mtp, dflash, mmproj } = cfg;
+  const { repo, ctx, ubatch, kCacheType, vCacheType, arch, mtp, dflash, mtpSidecar, mmproj } = cfg;
 
   const modelPlaceholder = repo.split('/').pop().replace(/-GGUF$/i, '');
 
@@ -40,6 +41,14 @@ export function buildCommand(cfg) {
     cmd += ` -md ./models/<${dflash.fileName}>`;
     if (dflash.kCacheType && dflash.kCacheType !== 'fp16') cmd += ` --cache-type-k-draft ${dflash.kCacheType}`;
     if (dflash.vCacheType && dflash.vCacheType !== 'fp16') cmd += ` --cache-type-v-draft ${dflash.vCacheType}`;
+  }
+
+  // Gemma4 MTP sidecar (memory-shared draft: shares the target's KV cache,
+  // so no draft K/V quantization flags — nothing separate to quantize).
+  // Mutually exclusive with the embedded-MTP path above.
+  if (mtpSidecar && mtpSidecar.fileName && !(arch && arch.mtpLayers > 0)) {
+    cmd += ` --spec-type draft-mtp --spec-draft-n-max 2`;
+    cmd += ` -md ./models/<${mtpSidecar.fileName}>`;
   }
 
   // Vision projector (mmproj)
