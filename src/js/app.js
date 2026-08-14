@@ -1,6 +1,6 @@
 import {
   QUANT_ORDER, sortQuants, parseQuant, isFirstPart, normalizeRepo,
-  extractArch, estimateVram, calcMmprojCompute,
+  extractArch, estimateVram, calcMmprojCompute, withMtpDisabled,
 } from './vram-estimator.js';
 import { parseGgufHeader, extractDflashArch, extractClipArch, extractMtpArch } from './gguf-parser.js';
 import { buildCommand } from './command-builder.js';
@@ -257,10 +257,6 @@ async function loadModel() {
       const baseConfig = await getBaseModelConfig(repo);
       if (baseConfig) arch = extractArch(baseConfig);
     } catch (e) { console.warn('Config fetch failed:', e); }
-    // Base model config may have MTP info even when the GGUF repo doesn't include MTP tensors
-    if (arch && !repo.toUpperCase().includes('MTP')) {
-      arch.mtpLayers = 0;
-    }
     cachedArch = arch;
 
     // Detect + parse DFlash sidecar
@@ -272,12 +268,21 @@ async function loadModel() {
     // Detect + parse Gemma4 MTP sidecar
     await loadMtpSidecar(repo, cachedFiles);
 
-    // Show/hide MTP section
+    // Show/hide MTP section. The base config.json is the source of truth here:
+    // it claims mtp_num_hidden_layers > 0 whenever the base checkpoint has an
+    // MTP head. The one known exception (unsloth/Qwen3.6-27B-GGUF, where the
+    // GGUFs had the layers stripped) is handled by the MTP toggle — uncheck it
+    // and the estimate drops the draft KV / rs_seq penalty.
     const mtpSection = document.getElementById('mtp-section');
-    if (arch && arch.mtpLayers > 0) {
-      mtpSection.style.display = 'block';
-    } else {
-      mtpSection.style.display = 'none';
+    const hasEmbeddedMtp = !!(arch && arch.mtpLayers > 0);
+    if (mtpSection) {
+      mtpSection.style.display = hasEmbeddedMtp ? 'block' : 'none';
+      if (hasEmbeddedMtp) {
+        const info = document.getElementById('mtp-info');
+        if (info) {
+          info.textContent = `${arch.mtpLayers} MTP layer${arch.mtpLayers > 1 ? 's' : ''} (per base model config)`;
+        }
+      }
     }
 
     // Show/hide DFlash section
@@ -410,6 +415,14 @@ function check() {
 
   const arch = cachedArch;
 
+    // Embedded MTP (in the main GGUF): when the toggle is off, estimate as if
+    // the MTP tensors were absent (llama.cpp skips them when spec decoding is
+    // disabled — no draft KV, no extra rs_seq).
+    const mtpEnabled = document.getElementById('mtp-toggle')?.checked ?? true;
+    const effArch = (arch && arch.mtpLayers > 0 && !mtpEnabled)
+      ? withMtpDisabled(arch)
+      : arch;
+
     // Assemble DFlash input for the estimator (only if toggle is on)
     const dflashEnabled = document.getElementById('dflash-toggle').checked;
     let dflashInput = null;
@@ -436,7 +449,7 @@ function check() {
     // Gemma4 MTP sidecar (only if toggle is on; mutually exclusive with embedded MTP)
     const mtpSidecarEnabled = document.getElementById('mtp-sidecar-toggle')?.checked ?? false;
     let mtpSidecarInput = null;
-    if (cachedMtpSidecar && mtpSidecarEnabled && !(arch && arch.mtpLayers > 0)) {
+    if (cachedMtpSidecar && mtpSidecarEnabled && !(effArch && effArch.mtpLayers > 0)) {
       mtpSidecarInput = {
         sizeGB: cachedMtpSidecar.sizeGB,
         arch: cachedMtpSidecar.arch,
@@ -444,14 +457,14 @@ function check() {
     }
 
     const estimate = estimateVram({
-      ggufFiles, ctx, ubatch, arch, kBpp, vBpp, mtpkBpp, mtpvBpp,
+      ggufFiles, ctx, ubatch, arch: effArch, kBpp, vBpp, mtpkBpp, mtpvBpp,
       dflash: dflashInput, dflashkBpp, dflashvBpp,
       mtpSidecar: mtpSidecarInput,
     });
 
-    renderMeta(repo, vram, ctx, arch, estimate, ubatch, mmprojGpuGB, mmprojComputeGB);
+    renderMeta(repo, vram, ctx, effArch, estimate, ubatch, mmprojGpuGB, mmprojComputeGB);
     renderResults(repo, estimate, vram, mmprojGpuGB);
-  renderCommand(repo, ctx, ubatch, arch);
+  renderCommand(repo, ctx, ubatch, effArch);
 }
 
 // ---------------------------------------------------------------------------
@@ -664,8 +677,8 @@ const GPU_PRESETS = [
 ];
 
 const MODEL_PRESETS = [
-  ['Qwen3.6 27B MTP', 'unsloth/Qwen3.6-27B-MTP-GGUF'],
-  ['Qwen3.6 27B', 'unsloth/Qwen3.6-27B-GGUF'],
+  ['Qwen3.8 27B', 'unsloth/Qwen3.8-27B-GGUF'],
+  ['Qwen3.6 27B', 'unsloth/Qwen3.6-27B-MTP-GGUF'],
   ['Muse Glimmer 30B', 'unsloth/Muse-Glimmer-30B-GGUF'],
   ['Gemma4 31B', 'unsloth/gemma-4-31b-it-GGUF'],
   ['Gemma4 12B', 'unsloth/gemma-4-12b-it-GGUF'],
@@ -772,7 +785,7 @@ function wireEvents() {
   });
   document.getElementById('reserve').addEventListener('change', check);
   document.getElementById('reserve').addEventListener('keydown', e => { if (e.key === 'Enter') check(); });
-  document.querySelectorAll('#k-quant, #v-quant, #mtp-k-quant, #mtp-v-quant, #dflash-k-quant, #dflash-v-quant, #dflash-toggle, #mtp-sidecar-toggle, #mmproj-mode').forEach(el => {
+  document.querySelectorAll('#k-quant, #v-quant, #mtp-k-quant, #mtp-v-quant, #dflash-k-quant, #dflash-v-quant, #dflash-toggle, #mtp-sidecar-toggle, #mtp-toggle, #mmproj-mode').forEach(el => {
     el.addEventListener('change', check);
     el.addEventListener('keydown', e => { if (e.key === 'Enter') check(); });
   });

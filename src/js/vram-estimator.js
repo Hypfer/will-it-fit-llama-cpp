@@ -165,6 +165,18 @@ export function calcKVCache(ctx, ubatch, arch, kBpp, vBpp) {
 }
 
 /**
+ * Copy of `arch` with MTP layers excluded, for estimating a run WITHOUT
+ * speculative drafting from the same file (`--spec-type` omitted → llama.cpp
+ * load_mtp=false, qwen35.cpp:42 skips the MTP tensors entirely — no weights
+ * loaded, no draft KV allocated). `numLayers` from a config-derived arch
+ * already includes mtpLayers, so subtract them back out.
+ */
+export function withMtpDisabled(arch) {
+  if (!arch || !arch.mtpLayers) return arch;
+  return { ...arch, mtpLayers: 0, numLayers: arch.numLayers - arch.mtpLayers };
+}
+
+/**
  * Recurrent state for hybrid models (Qwen3.6 linear_attention layers, Mamba-style).
  */
 export function calcRecurrentState(arch, nRsSeq) {

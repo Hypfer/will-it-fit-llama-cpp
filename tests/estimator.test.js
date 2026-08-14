@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import {
   QUANT_ORDER, sortQuants, parseQuant, isFirstPart, normalizeRepo,
   effectiveBpp, extractArch, calcKVCache, calcMtpKV, calcComputeBuffer,
-  calcMmprojCompute, calcMtpDraftCompute, estimateVram,
+  calcMmprojCompute, calcMtpDraftCompute, estimateVram, withMtpDisabled,
 } from '../src/js/vram-estimator.js';
 
 // ---------------------------------------------------------------------------
@@ -152,6 +152,51 @@ test('Qwen3.6-27B MTP draft KV', () => {
   const arch = extractArch(QWEN36_CONFIG);
   const mtp = calcMtpKV(131072, arch, 1.0625, 1.0625);
   assert.ok(mtp.sizeGB > 0.2 && mtp.sizeGB < 0.4, `MTP was ${mtp.sizeGB}, expected ~0.29`);
+});
+
+// ---------------------------------------------------------------------------
+// withMtpDisabled: estimate a run WITHOUT speculative drafting from an
+// MTP-containing GGUF (llama.cpp skips the MTP tensors when spec decoding
+// is off — no draft KV, no extra rs_seq)
+// ---------------------------------------------------------------------------
+
+test('withMtpDisabled strips MTP layers from the arch', () => {
+  const arch = extractArch(QWEN36_CONFIG);
+  assert.equal(arch.numLayers, 65); // 64 trunk + 1 MTP
+  assert.equal(arch.mtpLayers, 1);
+
+  const noMtp = withMtpDisabled(arch);
+  assert.equal(noMtp.numLayers, 64);
+  assert.equal(noMtp.mtpLayers, 0);
+  // Original untouched
+  assert.equal(arch.numLayers, 65);
+  assert.equal(arch.mtpLayers, 1);
+});
+
+test('withMtpDisabled drops draft KV and recurrent-state penalty', () => {
+  const arch = extractArch(QWEN36_CONFIG);
+  const noMtp = withMtpDisabled(arch);
+  const ctx = 131072, bpp = 1.0625;
+
+  assert.equal(calcMtpKV(ctx, noMtp, bpp, bpp).sizeGB, 0);
+
+  // Main KV is unchanged: trunk layers keep their cache either way
+  assert.ok(Math.abs(calcKVCache(ctx, 512, arch, bpp, bpp).sizeGB
+                  - calcKVCache(ctx, 512, noMtp, bpp, bpp).sizeGB) < 1e-9);
+
+  // Recurrent state: nRsSeq=2 only when MTP drafting is active
+  const rsWith = estimateVram({ ggufFiles: [{ path: 'm-Q4_K_M.gguf', size: 16e9 }], ctx, ubatch: 512, arch, kBpp: bpp, vBpp: bpp, mtpkBpp: bpp, mtpvBpp: bpp });
+  const rsWithout = estimateVram({ ggufFiles: [{ path: 'm-Q4_K_M.gguf', size: 16e9 }], ctx, ubatch: 512, arch: noMtp, kBpp: bpp, vBpp: bpp, mtpkBpp: bpp, mtpvBpp: bpp });
+  assert.ok(rsWith.mtp.sizeGB > 0, 'MTP KV should be counted when enabled');
+  assert.equal(rsWithout.mtp.sizeGB, 0, 'MTP KV should vanish when disabled');
+  assert.ok(rsWith.rs.sizeGB > rsWithout.rs.sizeGB, `rs_seq penalty should drop (${rsWith.rs.sizeGB} -> ${rsWithout.rs.sizeGB})`);
+});
+
+test('withMtpDisabled is a no-op for MTP-less arches', () => {
+  const arch = extractArch(QWEN36_CONFIG);
+  const noMtp = withMtpDisabled(arch);
+  assert.equal(withMtpDisabled(noMtp), noMtp); // same reference, not a copy
+  assert.equal(withMtpDisabled(null), null);
 });
 
 // ---------------------------------------------------------------------------

@@ -208,7 +208,7 @@
   <div class="preset-group" id="model-presets"></div>
 
   <label>GGUF repo</label>
-  <input type="text" id="repo" value="unsloth/Qwen3.6-27B-MTP-GGUF" />
+  <input type="text" id="repo" value="unsloth/Qwen3.8-27B-GGUF" />
 
   <button class="btn" id="load">Load Model Metadata</button>
 
@@ -263,6 +263,13 @@
 
   <div id="mtp-section" style="display:none;">
     <hr class="sidebar-sep" />
+    <label>MTP drafting</label>
+    <div id="mtp-info" style="font-size: 0.75rem; color: var(--text-muted); line-height: 1.4; margin-top: 0.25rem;"></div>
+    <label class="checkbox-label" style="flex-direction: row; align-items: center; gap: 0.5rem; text-transform: none; letter-spacing: 0; margin-top: 0.5rem; font-size: 0.8rem; color: var(--text-main); cursor: pointer;">
+      <input type="checkbox" id="mtp-toggle" style="width: auto; margin: 0;" checked />
+      Enable MTP drafting
+    </label>
+
     <label>MTP K cache quant</label>
     <select id="mtp-k-quant">
       <option value="2">fp16 (2.0 BPP)</option>
