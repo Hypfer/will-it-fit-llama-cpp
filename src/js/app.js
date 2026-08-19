@@ -102,11 +102,11 @@ async function loadDflashSidecar(repoId, files) {
 }
 
 // ---------------------------------------------------------------------------
-// Gemma4 MTP sidecar detection
+// MTP sidecar detection
 // ---------------------------------------------------------------------------
 
 /**
- * Find the Gemma4 MTP sidecar in the repo file tree.
+ * Find the MTP sidecar in the repo file tree.
  * Detection: root-level `mtp-*.gguf` (unsloth convention, the prepacked Q8_0
  * default) is preferred; otherwise fall back to `MTP/mtp-*.gguf` (the larger
  * per-quant variants). Matches the DFlash root-level convention.
@@ -122,7 +122,7 @@ function findMtpSidecar(files) {
 }
 
 /**
- * Detect + parse the Gemma4 MTP sidecar: fetch its GGUF header and extract arch.
+ * Detect + parse the MTP sidecar: fetch its GGUF header and extract arch.
  * Sets `cachedMtpSidecar`. Called during loadModel().
  */
 async function loadMtpSidecar(repoId, files) {
@@ -141,7 +141,7 @@ async function loadMtpSidecar(repoId, files) {
     const arch = extractMtpArch(metadata);
     cachedMtpSidecar = {
       fileName, sizeGB, arch, path: sidecar.path,
-      headerError: arch ? null : 'No gemma4-assistant.* metadata found in header',
+      headerError: arch ? null : 'No MTP draft metadata found in header',
     };
   } catch (e) {
     console.warn('MTP sidecar header parse failed:', e);
@@ -265,24 +265,34 @@ async function loadModel() {
       // Detect mmproj sidecar
       await loadMmprojSidecar(repo, cachedFiles);
 
-    // Detect + parse Gemma4 MTP sidecar
+    // Detect + parse MTP sidecar
     await loadMtpSidecar(repo, cachedFiles);
 
-    // Show/hide MTP section. The base config.json is the source of truth here:
-    // it claims mtp_num_hidden_layers > 0 whenever the base checkpoint has an
-    // MTP head. The one known exception (unsloth/Qwen3.6-27B-GGUF, where the
-    // GGUFs had the layers stripped) is handled by the MTP toggle — uncheck it
-    // and the estimate drops the draft KV / rs_seq penalty.
+    // MTP drafting section: one section, two shapes. Embedded MTP layers (from
+    // the base config.json) when present; otherwise the sidecar draft file some
+    // repos ship for small quants. The KV quant dropdowns only apply to the
+    // embedded path — the sidecar shares the target's KV cache.
     const mtpSection = document.getElementById('mtp-section');
     const hasEmbeddedMtp = !!(arch && arch.mtpLayers > 0);
     if (mtpSection) {
-      mtpSection.style.display = hasEmbeddedMtp ? 'block' : 'none';
+      mtpSection.style.display = (hasEmbeddedMtp || cachedMtpSidecar) ? 'block' : 'none';
+      const info = document.getElementById('mtp-info');
       if (hasEmbeddedMtp) {
-        const info = document.getElementById('mtp-info');
         if (info) {
           info.textContent = `${arch.mtpLayers} MTP layer${arch.mtpLayers > 1 ? 's' : ''} (per base model config)`;
         }
+      } else if (cachedMtpSidecar && info) {
+        const url = `${HF_BASE}/${repo}/blob/main/${cachedMtpSidecar.path}`;
+        let txt = `<a href="${url}" target="_blank" class="sidecar-link">${cachedMtpSidecar.fileName}</a> (${cachedMtpSidecar.sizeGB.toFixed(2)} GB)`;
+        if (cachedMtpSidecar.arch) {
+          txt += ` — ${cachedMtpSidecar.arch.numLayers} MTP layer${cachedMtpSidecar.arch.numLayers > 1 ? 's' : ''}`;
+        } else if (cachedMtpSidecar.headerError) {
+          txt += ` — header parse failed: ${cachedMtpSidecar.headerError}`;
+        }
+        info.innerHTML = txt;
       }
+      const kvQuants = document.getElementById('mtp-kv-quants');
+      if (kvQuants) kvQuants.style.display = hasEmbeddedMtp ? 'block' : 'none';
     }
 
     // Show/hide DFlash section
@@ -297,26 +307,6 @@ async function loadModel() {
           if (cachedDflash.arch) {
             const a = cachedDflash.arch;
             txt += ` — ${a.numLayers} layers, ${a.numKVHeads} KV heads × ${a.headDim}`;
-          }
-          info.innerHTML = txt;
-        }
-      }
-    }
-
-    // Show/hide Gemma4 MTP sidecar section
-    const mtpSidecarSection = document.getElementById('mtp-sidecar-section');
-    if (mtpSidecarSection) {
-      mtpSidecarSection.style.display = cachedMtpSidecar ? 'block' : 'none';
-      if (cachedMtpSidecar) {
-        const info = document.getElementById('mtp-sidecar-info');
-        if (info) {
-          const url = `${HF_BASE}/${repo}/blob/main/${cachedMtpSidecar.path}`;
-          let txt = `<a href="${url}" target="_blank" class="sidecar-link">${cachedMtpSidecar.fileName}</a> (${cachedMtpSidecar.sizeGB.toFixed(2)} GB)`;
-          if (cachedMtpSidecar.arch) {
-            const a = cachedMtpSidecar.arch;
-            txt += ` — ${a.numLayers} MTP layers`;
-          } else if (cachedMtpSidecar.headerError) {
-            txt += ` — header parse failed: ${cachedMtpSidecar.headerError}`;
           }
           info.innerHTML = txt;
         }
@@ -446,8 +436,8 @@ function check() {
       mmprojGpuGB = cachedMmproj.sizeGB + mmprojComputeGB;
     }
 
-    // Gemma4 MTP sidecar (only if toggle is on; mutually exclusive with embedded MTP)
-    const mtpSidecarEnabled = document.getElementById('mtp-sidecar-toggle')?.checked ?? false;
+    // MTP sidecar (only if toggle is on; mutually exclusive with embedded MTP)
+    const mtpSidecarEnabled = document.getElementById('mtp-toggle')?.checked ?? false;
     let mtpSidecarInput = null;
     if (cachedMtpSidecar && mtpSidecarEnabled && !(effArch && effArch.mtpLayers > 0)) {
       mtpSidecarInput = {
@@ -518,7 +508,7 @@ function renderMeta(repo, vram, ctx, arch, est, ubatch, mmprojGpuGB = 0, mmprojC
     const mtpLink = cachedMtpSidecar?.path
       ? `<a href="${HF_BASE}/${repo}/blob/main/${cachedMtpSidecar.path}" target="_blank" class="sidecar-link">${m.fileName || 'sidecar'}</a>`
       : (m.fileName || 'sidecar');
-    metaLines += `<div>Gemma4 MTP draft: ${detail} (${mtpLink})</div>`;
+    metaLines += `<div>MTP draft: ${detail} (${mtpLink})</div>`;
   }
   if (cachedMmproj) {
     const mmprojMode = document.getElementById('mmproj-mode').value;
@@ -622,9 +612,9 @@ function renderCommand(repo, ctx, ubatch, arch) {
     };
   }
 
-  // Gemma4 MTP sidecar: only when toggled on and no embedded MTP (mutually exclusive)
+  // MTP sidecar: only when toggled on and no embedded MTP (mutually exclusive)
   let mtpSidecar = null;
-  if (cachedMtpSidecar && (document.getElementById('mtp-sidecar-toggle')?.checked ?? false) && !(arch && arch.mtpLayers > 0)) {
+  if (cachedMtpSidecar && (document.getElementById('mtp-toggle')?.checked ?? false) && !(arch && arch.mtpLayers > 0)) {
     mtpSidecar = { fileName: cachedMtpSidecar.fileName };
   }
 
@@ -785,7 +775,7 @@ function wireEvents() {
   });
   document.getElementById('reserve').addEventListener('change', check);
   document.getElementById('reserve').addEventListener('keydown', e => { if (e.key === 'Enter') check(); });
-  document.querySelectorAll('#k-quant, #v-quant, #mtp-k-quant, #mtp-v-quant, #dflash-k-quant, #dflash-v-quant, #dflash-toggle, #mtp-sidecar-toggle, #mtp-toggle, #mmproj-mode').forEach(el => {
+  document.querySelectorAll('#k-quant, #v-quant, #mtp-k-quant, #mtp-v-quant, #dflash-k-quant, #dflash-v-quant, #dflash-toggle, #mtp-toggle, #mmproj-mode').forEach(el => {
     el.addEventListener('change', check);
     el.addEventListener('keydown', e => { if (e.key === 'Enter') check(); });
   });

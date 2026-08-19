@@ -246,9 +246,11 @@ export function extractDflashArch(metadata) {
 }
 
 /**
- * Extract architecture params from a Gemma4 assistant (MTP sidecar) GGUF header.
+ * Extract architecture params from an MTP draft sidecar GGUF header.
  *
- * Gemma4-assistant GGUF keys (prefix "gemma4-assistant."):
+ * Two sidecar shapes exist:
+ *
+ * 1. Gemma4 assistant (dedicated arch "gemma4-assistant"):
  *   general.architecture                          = "gemma4-assistant"
  *   gemma4-assistant.block_count                  = number of MTP layers (e.g. 4)
  *   gemma4-assistant.embedding_length             = draft hidden size (e.g. 1024)
@@ -256,7 +258,13 @@ export function extractDflashArch(metadata) {
  *   gemma4-assistant.attention.shared_kv_layers   = layers sharing KV (== block_count
  *                                                   for Gemma4 — ALL layers share the
  *                                                   target's KV cache, zero draft KV)
- * No vocab key: the assistant borrows the target model's vocab.
+ *
+ * 2. Generic nextn sidecar (e.g. unsloth's MTP/mtp-*.gguf in Qwen-style repos):
+ *   a regular model header whose arch carries the standard MTP marker
+ *   `<arch>.nextn_predict_layers` > 0 (e.g. qwen35.nextn_predict_layers = 1).
+ *   Only the layer count is read — other params stay approximate.
+ *
+ * No vocab key in either: the draft borrows the target model's vocab.
  *
  * VRAM cost is therefore just the sidecar weights + a draft compute buffer (the
  * draft context runs llama_decode against the borrowed KV — see llama-model.cpp:2362
@@ -266,20 +274,36 @@ export function extractDflashArch(metadata) {
  * @returns {object|null} { numLayers, hiddenSize, vocabSize, nEmbdOut, sharedKvLayers } or null
  */
 export function extractMtpArch(metadata) {
-  if (metadata['general.architecture'] !== 'gemma4-assistant') return null;
+  const archName = metadata['general.architecture'];
 
-  const numLayers = metadata['gemma4-assistant.block_count'] || 0;
-  const sharedKvLayers = metadata['gemma4-assistant.attention.shared_kv_layers'] || 0;
+  // Gemma4 assistant sidecar: dedicated arch with shared-KV params
+  if (archName === 'gemma4-assistant') {
+    const numLayers = metadata['gemma4-assistant.block_count'] || 0;
+    const sharedKvLayers = metadata['gemma4-assistant.attention.shared_kv_layers'] || 0;
 
-  return {
-    numLayers,
-    hiddenSize: metadata['gemma4-assistant.embedding_length'] || 0,
-    nEmbdOut: metadata['gemma4-assistant.embedding_length_out'] || 0,
-    sharedKvLayers,
-    // No vocab key in the sidecar header — inherits the target's vocab.
-    // Use the Gemma4 default as a fallback for the compute buffer estimate.
-    vocabSize: 262144,
-  };
+    return {
+      numLayers,
+      hiddenSize: metadata['gemma4-assistant.embedding_length'] || 0,
+      nEmbdOut: metadata['gemma4-assistant.embedding_length_out'] || 0,
+      sharedKvLayers,
+      // No vocab key in the sidecar header — inherits the target's vocab.
+      // Use the Gemma4 default as a fallback for the compute buffer estimate.
+      vocabSize: 262144,
+    };
+  }
+
+  // Generic nextn sidecar: any arch with <arch>.nextn_predict_layers > 0
+  const nextnLayers = archName ? metadata[`${archName}.nextn_predict_layers`] : 0;
+  if (typeof nextnLayers === 'number' && nextnLayers > 0) {
+    return {
+      numLayers: nextnLayers,
+      // No vocab key — inherits the target's vocab; fallback for the compute
+      // buffer estimate.
+      vocabSize: 262144,
+    };
+  }
+
+  return null;
 }
 
 /**

@@ -178,7 +178,6 @@
 
   /* --- DFLASH INFO --- */
   #dflash-info { font-size: 0.75rem; color: var(--text-muted); line-height: 1.4; margin-top: 0.25rem; }
-  #mtp-sidecar-info { font-size: 0.75rem; color: var(--text-muted); line-height: 1.4; margin-top: 0.25rem; }
   .sidecar-link { color: var(--text-main); text-decoration: none; font-weight: 600; transition: color 0.15s; }
   .sidecar-link:hover { color: var(--accent); text-decoration: underline; }
 
@@ -270,27 +269,29 @@
       Enable MTP drafting
     </label>
 
-    <label>MTP K cache quant</label>
-    <select id="mtp-k-quant">
-      <option value="2">fp16 (2.0 BPP)</option>
-      <option value="1.0625">q8_0 (1.06 BPP)</option>
-      <option value="0.75">q5_1 (0.75 BPP)</option>
-      <option value="0.6875">q5_0 (0.69 BPP)</option>
-      <option value="0.625">q4_1 (0.63 BPP)</option>
-      <option value="0.5625" selected>q4_0 (0.56 BPP)</option>
-      <option value="0.5625">iq4_nl (0.56 BPP)</option>
-    </select>
+    <div id="mtp-kv-quants">
+      <label>MTP K cache quant</label>
+      <select id="mtp-k-quant">
+        <option value="2">fp16 (2.0 BPP)</option>
+        <option value="1.0625">q8_0 (1.06 BPP)</option>
+        <option value="0.75">q5_1 (0.75 BPP)</option>
+        <option value="0.6875">q5_0 (0.69 BPP)</option>
+        <option value="0.625">q4_1 (0.63 BPP)</option>
+        <option value="0.5625" selected>q4_0 (0.56 BPP)</option>
+        <option value="0.5625">iq4_nl (0.56 BPP)</option>
+      </select>
 
-    <label>MTP V cache quant</label>
-    <select id="mtp-v-quant">
-      <option value="2">fp16 (2.0 BPP)</option>
-      <option value="1.0625">q8_0 (1.06 BPP)</option>
-      <option value="0.75">q5_1 (0.75 BPP)</option>
-      <option value="0.6875">q5_0 (0.69 BPP)</option>
-      <option value="0.625">q4_1 (0.63 BPP)</option>
-      <option value="0.5625" selected>q4_0 (0.56 BPP)</option>
-      <option value="0.5625">iq4_nl (0.56 BPP)</option>
-    </select>
+      <label>MTP V cache quant</label>
+      <select id="mtp-v-quant">
+        <option value="2">fp16 (2.0 BPP)</option>
+        <option value="1.0625">q8_0 (1.06 BPP)</option>
+        <option value="0.75">q5_1 (0.75 BPP)</option>
+        <option value="0.6875">q5_0 (0.69 BPP)</option>
+        <option value="0.625">q4_1 (0.63 BPP)</option>
+        <option value="0.5625" selected>q4_0 (0.56 BPP)</option>
+        <option value="0.5625">iq4_nl (0.56 BPP)</option>
+      </select>
+    </div>
   </div>
 
   <div id="dflash-section" style="display:none;">
@@ -322,16 +323,6 @@
       <option value="0.5625">q4_0 (0.56 BPP)</option>
       <option value="0.5625">iq4_nl (0.56 BPP)</option>
     </select>
-  </div>
-
-  <div id="mtp-sidecar-section" style="display:none;">
-    <hr class="sidebar-sep" />
-    <label>Gemma4 MTP draft model</label>
-    <div id="mtp-sidecar-info"></div>
-    <label class="checkbox-label" style="flex-direction: row; align-items: center; gap: 0.5rem; text-transform: none; letter-spacing: 0; margin-top: 0.5rem; font-size: 0.8rem; color: var(--text-main); cursor: pointer;">
-      <input type="checkbox" id="mtp-sidecar-toggle" style="width: auto; margin: 0;" checked />
-      Enable MTP drafting
-    </label>
   </div>
 
   <div id="mmproj-section" style="display:none;">

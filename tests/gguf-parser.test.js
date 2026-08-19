@@ -10,6 +10,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const HEADER_BYTES = readFileSync(join(__dirname, 'fixtures', 'dflash_header.bin'));
 const MMPROJ_BYTES = readFileSync(join(__dirname, 'fixtures', 'mmproj_header.bin'));
 const MTP_SIDECAR_BYTES = readFileSync(join(__dirname, 'fixtures', 'mtp_sidecar_header.bin'));
+const MTP_SIDECAR_NEXTN_BYTES = readFileSync(join(__dirname, 'fixtures', 'mtp_sidecar_nextn_header.bin'));
 
 test('parseGgufHeader reads magic and version', () => {
   const { magic, version, nTensors, nKV } = parseGgufHeader(HEADER_BYTES);
@@ -116,7 +117,7 @@ test('extractClipArch returns null for non-CLIP metadata', () => {
 });
 
 // ---------------------------------------------------------------------------
-// Gemma4 MTP sidecar (gemma4-assistant) header parsing
+// MTP draft sidecar header parsing (gemma4-assistant + generic nextn)
 // ---------------------------------------------------------------------------
 
 test('parseGgufHeader reads gemma4-assistant architecture metadata', () => {
@@ -157,4 +158,22 @@ test('extractMtpArch returns null for non-gemma4-assistant model', () => {
   assert.equal(extractMtpArch({ 'general.architecture': 'llama' }), null);
   assert.equal(extractMtpArch({ 'general.architecture': 'gemma4' }), null);
   assert.equal(extractMtpArch({}), null);
+});
+
+// Real header from unsloth/Qwen3.8-27B-GGUF MTP/mtp-Qwen3.8-27B-Q4_0.gguf:
+// a regular qwen35 arch whose nextn_predict_layers marks the MTP draft.
+test('parseGgufHeader reads generic nextn sidecar architecture metadata', () => {
+  const { metadata } = parseGgufHeader(MTP_SIDECAR_NEXTN_BYTES);
+  assert.equal(metadata['general.architecture'], 'qwen35');
+  assert.equal(metadata['qwen35.nextn_predict_layers'], 1);
+});
+
+test('extractMtpArch builds architecture object from a generic nextn sidecar header', () => {
+  const { metadata } = parseGgufHeader(MTP_SIDECAR_NEXTN_BYTES);
+  const arch = extractMtpArch(metadata);
+  assert.equal(arch.numLayers, 1);
+});
+
+test('extractMtpArch returns null for arch without nextn metadata', () => {
+  assert.equal(extractMtpArch({ 'general.architecture': 'qwen35', 'qwen35.block_count': 48 }), null);
 });

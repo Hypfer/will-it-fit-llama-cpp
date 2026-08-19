@@ -8,7 +8,7 @@
  * @property {object|null} arch         - main model architecture (from extractArch)
  * @property {object|null} mtp          - MTP options {kCacheType, vCacheType} or null
  * @property {object|null} dflash       - DFlash sidecar {fileName, kCacheType, vCacheType} or null
- * @property {object|null} mtpSidecar   - Gemma4 MTP sidecar {fileName} or null (shared KV)
+ * @property {object|null} mtpSidecar   - MTP sidecar {fileName} or null (shared KV)
  * @property {object|null} mmproj       - mmproj options {fileName, cpuOnly} or null
  */
 
@@ -43,7 +43,7 @@ export function buildCommand(cfg) {
     if (dflash.vCacheType && dflash.vCacheType !== 'fp16') cmd += ` --cache-type-v-draft ${dflash.vCacheType}`;
   }
 
-  // Gemma4 MTP sidecar (memory-shared draft: shares the target's KV cache,
+  // MTP sidecar (memory-shared draft: shares the target's KV cache,
   // so no draft K/V quantization flags — nothing separate to quantize).
   // Mutually exclusive with the embedded-MTP path above.
   if (mtpSidecar && mtpSidecar.fileName && !(arch && arch.mtpLayers > 0)) {

@@ -3,8 +3,8 @@
 // ---------------------------------------------------------------------------
 
 export const QUANT_ORDER = [
-  'F32','BF16','F16','Q8_K_XL','UD-Q8_K_XL','Q8_0',
-  'Q6_K_XL','UD-Q6_K_XL','Q6_K','UD-Q6_K',
+  'F32','BF16','F16','Q8_K_XL','UD-Q8_K_XL','Q8_0','Q8_K_L','UD-Q8_K_L',
+  'Q6_K_XL','UD-Q6_K_XL','Q6_K_L','UD-Q6_K_L','Q6_K_M','UD-Q6_K_M','Q6_K','UD-Q6_K',
   'Q5_K_XL','UD-Q5_K_XL','Q5_K_L','UD-Q5_K_L','Q5_K_M','UD-Q5_K_M','Q5_K_S','UD-Q5_K_S',
   'Q4_K_XL','UD-Q4_K_XL','Q4_1','Q4_K_M','UD-Q4_K_M','Q4_K_S','UD-Q4_K_S','IQ4_NL','UD-IQ4_NL','Q4_0','IQ4_XS','UD-IQ4_XS',
   'Q3_K_XL','UD-Q3_K_XL','Q3_K_M','UD-Q3_K_M','Q3_K_S','UD-Q3_K_S','IQ3_M','UD-IQ3_M','IQ3_XXS','UD-IQ3_XXS','IQ3_S','UD-IQ3_S',
@@ -242,7 +242,7 @@ export function calcMmprojCompute(clipArch) {
 }
 
 /**
- * Gemma4 MTP sidecar compute buffer estimate.
+ * MTP sidecar compute buffer estimate.
  *
  * The sidecar (gemma4-assistant) shares the target's KV cache, so it has zero
  * draft KV. The only extra VRAM beyond the sidecar weights is a draft compute
@@ -277,7 +277,7 @@ export function calcMtpDraftCompute(ubatch, mtpArch) {
  * @param {object} [opts.dflash]       - DFlash sidecar {arch, sizeGB} or null
  * @param {number} [opts.dflashkBpp]   - DFlash K cache BPP (defaults to main kBpp)
  * @param {number} [opts.dflashvBpp]   - DFlash V cache BPP (defaults to main vBpp)
- * @param {object} [opts.mtpSidecar]   - Gemma4 MTP sidecar {arch, sizeGB} or null
+ * @param {object} [opts.mtpSidecar]   - MTP sidecar {arch, sizeGB} or null
  * @returns {{quants, kv, rs, mtp, dflash, mtpSidecar, computeBuf}}
  */
 export function estimateVram(opts) {
@@ -310,7 +310,7 @@ export function estimateVram(opts) {
     dflashTotal = dflash.sizeGB;
   }
 
-  // Gemma4 MTP sidecar: weights + draft compute buffer (zero KV — shared with target)
+  // MTP sidecar: weights + draft compute buffer (zero KV — shared with target)
   const mtpSidecarCompute = mtpSidecar && mtpSidecar.arch
     ? calcMtpDraftCompute(ubatch, mtpSidecar.arch)
     : 0;
