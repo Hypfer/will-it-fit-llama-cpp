@@ -25,14 +25,25 @@ export function buildCommand(cfg) {
 
   let cmd = `llama-server -m ./models/<${modelPlaceholder}_Q...>.gguf -c ${ctx} -ub ${ubatch} -ngl 999 -fa --jinja`;
 
+  // MLA models (GLM-5.x / DeepSeek-style) have a single compressed-latent K cache
+  // and NO V tensor, but llama.cpp still hard-requires type_k == type_v
+  // (llama-context.cpp: "model does not support different K and V cache types" →
+  // returns nullptr → context init fails). -ctv defaults to F16, so omitting it
+  // next to a quantized -ctk would crash. Mirror the K quant onto -ctv.
+  const isMla = !!(arch && arch.isMla);
+  const vCacheTypeEff = isMla ? kCacheType : vCacheType;
+
   if (kCacheType !== 'fp16') cmd += ` --cache-type-k ${kCacheType}`;
-  if (vCacheType !== 'fp16') cmd += ` --cache-type-v ${vCacheType}`;
+  if (vCacheTypeEff !== 'fp16') cmd += ` --cache-type-v ${vCacheTypeEff}`;
 
   // MTP speculative decoding (embedded head in the model)
   if (arch && arch.mtpLayers > 0) {
     cmd += ` --spec-type draft-mtp --spec-draft-n-max 2`;
+    // The MTP draft context is the same arch (also MLA) — its draft type_k/type_v
+    // must match too, so mirror the draft K quant onto -ctvd.
+    const mtpV = (mtp && isMla) ? mtp.kCacheType : (mtp ? mtp.vCacheType : null);
     if (mtp && mtp.kCacheType !== 'fp16') cmd += ` --cache-type-k-draft ${mtp.kCacheType}`;
-    if (mtp && mtp.vCacheType !== 'fp16') cmd += ` --cache-type-v-draft ${mtp.vCacheType}`;
+    if (mtp && mtpV !== 'fp16') cmd += ` --cache-type-v-draft ${mtpV}`;
   }
 
   // DFlash speculative decoding (separate sidecar draft model)

@@ -413,6 +413,26 @@ function check() {
       ? withMtpDisabled(arch)
       : arch;
 
+    // MLA models (GLM-5.x / DeepSeek-style) store one compressed latent K cache
+    // and no V tensor (has_v = !is_mla()), so there is nothing for a V quant to
+    // act on. Hide the V dropdowns and relabel the K quant as "KV cache quant"
+    // — it quantizes the whole latent, which is the combined K+V cache.
+    // (DFlash sidecars are plain MHA models with their own V — never hidden.)
+    const isMla = !!(effArch && effArch.isMla);
+    const kvLabel = isMla ? 'KV cache quant' : 'K cache quant';
+    const mtpKvLabel = isMla ? 'MTP KV cache quant' : 'MTP K cache quant';
+    const kLabelEl = document.getElementById('k-quant-label');
+    if (kLabelEl) kLabelEl.textContent = kvLabel;
+    const mtpKLabelEl = document.getElementById('mtp-k-quant-label');
+    if (mtpKLabelEl) mtpKLabelEl.textContent = mtpKvLabel;
+    for (const id of ['v-quant', 'mtp-v-quant']) {
+      const el = document.getElementById(id);
+      if (!el) continue;
+      const lbl = el.previousElementSibling;
+      if (lbl && lbl.tagName === 'LABEL') lbl.style.display = isMla ? 'none' : '';
+      el.style.display = isMla ? 'none' : '';
+    }
+
     // Assemble DFlash input for the estimator (only if toggle is on)
     const dflashEnabled = document.getElementById('dflash-toggle').checked;
     let dflashInput = null;
@@ -468,24 +488,40 @@ function renderMeta(repo, vram, ctx, arch, est, ubatch, mmprojGpuGB = 0, mmprojC
   const archName = cachedGGUF?.architecture || 'unknown';
   const kLabel = document.getElementById('k-quant').selectedOptions[0].textContent;
   const vLabel = document.getElementById('v-quant').selectedOptions[0].textContent;
+  const isMla = !!(arch && arch.isMla);
   const { kv, rs, mtp, computeBuf } = est;
   const nRsSeq = arch && arch.mtpLayers ? 2 : 0;
 
   let metaLines = `<div><strong>${repo}</strong></div>`;
-  metaLines += `<div>Arch: ${archName} | Context: ${fmtCtx(ctx)} | K: ${kLabel} | V: ${vLabel}</div>`;
+  // MLA has one combined latent cache: show it as a single KV quant.
+  const quantPart = isMla ? `KV: ${kLabel}` : `K: ${kLabel} | V: ${vLabel}`;
+  metaLines += `<div>Arch: ${archName} | Context: ${fmtCtx(ctx)} | ${quantPart}</div>`;
   if (kv.sizeGB > 0) {
-    let kvDetail = `K: ${kv.kGB.toFixed(2)}, V: ${kv.vGB.toFixed(2)}, ${kv.nAttnLayers} attn`;
-    if (kv.nSWA > 0) kvDetail += `, ${kv.nSWA} SWA (win: ${arch.slidingWindow})`;
-    if (kv.padPct > 0) kvDetail += `, CUDA pad: +${kv.padPct.toFixed(1)}%`;
-    metaLines += `<div>KV cache: ${kv.sizeGB.toFixed(2)} GB (${kvDetail})</div>`;
+    if (kv.kLatentGB != null) {
+      // MLA: one compressed latent K cache per layer + sparse indexer K cache, no V
+      let kvDetail = `K latent: ${kv.kLatentGB.toFixed(2)} (${kv.nAttnLayers} layers × ${arch.mlaKLatent}), no V`;
+      if (kv.indexerGB > 0) {
+        kvDetail += ` + indexer: ${kv.indexerGB.toFixed(2)} (${kv.nIndexerLayers} layers × ${arch.indexerKeyLen}${arch.indexerHeads > 1 ? ` × ${arch.indexerHeads} heads` : ''}${arch.indexerForcedF16 ? ', f16' : ''})`;
+      }
+      if (kv.padPct > 0) kvDetail += `, CUDA pad: +${kv.padPct.toFixed(1)}%`;
+      metaLines += `<div>KV cache: ${kv.sizeGB.toFixed(2)} GB (${kvDetail})</div>`;
+    } else {
+      let kvDetail = `K: ${kv.kGB.toFixed(2)}, V: ${kv.vGB.toFixed(2)}, ${kv.nAttnLayers} attn`;
+      if (kv.nSWA > 0) kvDetail += `, ${kv.nSWA} SWA (win: ${arch.slidingWindow})`;
+      if (kv.padPct > 0) kvDetail += `, CUDA pad: +${kv.padPct.toFixed(1)}%`;
+      metaLines += `<div>KV cache: ${kv.sizeGB.toFixed(2)} GB (${kvDetail})</div>`;
+    }
   }
   if (rs.sizeGB > 0) {
-    metaLines += `<div>Recurrent state: ${rs.sizeGB.toFixed(2)} GB (${rs.nRecurLayers} Mamba layers, ${nRsSeq} rs_seq)</div>`;
+    metaLines += `<div>Recurrent state: ${rs.sizeGB.toFixed(2)} GB (${rs.nRecurLayers} linear-attn layers, ${nRsSeq} rs_seq, f32)</div>`;
   }
   if (mtp.sizeGB > 0) {
     const mtpKLabel = document.getElementById('mtp-k-quant').selectedOptions[0].textContent.split(' ')[0];
     const mtpVLabel = document.getElementById('mtp-v-quant').selectedOptions[0].textContent.split(' ')[0];
-    let mtpDetail = `K: ${mtp.kGB.toFixed(2)}, V: ${mtp.vGB.toFixed(2)}, ${arch.mtpLayers} layer, ${mtpKLabel}/${mtpVLabel}`;
+    // MLA: the draft cache is the same latent — one quant, no V.
+    let mtpDetail = mtp.vGB > 0
+      ? `K: ${mtp.kGB.toFixed(2)}, V: ${mtp.vGB.toFixed(2)}, ${arch.mtpLayers} layer, ${mtpKLabel}/${mtpVLabel}`
+      : `KV: ${mtp.kGB.toFixed(2)}, ${arch.mtpLayers} layer, ${mtpKLabel}`;
     if (mtp.padPct > 0) mtpDetail += `, CUDA pad: +${mtp.padPct.toFixed(1)}%`;
     metaLines += `<div>MTP draft KV: ${mtp.sizeGB.toFixed(2)} GB (${mtpDetail})</div>`;
   }
@@ -679,6 +715,8 @@ const MODEL_PRESETS = [
 const MODEL_PRESETS_MOE = [
   ['Qwen3.6 35B A3B', 'unsloth/Qwen3.6-35B-A3B-GGUF'],
   ['Gemma4 26B A4B', 'unsloth/gemma-4-26B-A4B-it-GGUF'],
+  ['GLM-5.3 744B A40B', 'unsloth/GLM-5.3-GGUF'],
+  ['GLM-5.3-Flash 321B A18B', 'unsloth/GLM-5.3-Flash-GGUF'],
 ];
 
 // ---------------------------------------------------------------------------

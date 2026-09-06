@@ -3,7 +3,8 @@ import assert from 'node:assert/strict';
 import {
   QUANT_ORDER, sortQuants, parseQuant, isFirstPart, normalizeRepo,
   effectiveBpp, extractArch, calcKVCache, calcMtpKV, calcComputeBuffer,
-  calcMmprojCompute, calcMtpDraftCompute, estimateVram, withMtpDisabled,
+  calcRecurrentState, calcMmprojCompute, calcMtpDraftCompute,
+  estimateVram, withMtpDisabled,
 } from '../src/js/vram-estimator.js';
 
 // ---------------------------------------------------------------------------
@@ -267,6 +268,196 @@ test('Gemma4 E4B respects num_kv_shared_layers (only 24/42 layers have KV)', () 
   // Validated: ~1.09 GB, NOT ~1.92 GB (which would be all 42 layers)
   assert.ok(kv.sizeGB < 1.2, `KV was ${kv.sizeGB}, expected <1.2 (shared layers not counted)`);
   assert.ok(kv.sizeGB > 1.0, `KV was ${kv.sizeGB}, expected >1.0`);
+});
+
+// ---------------------------------------------------------------------------
+// KV cache: GLM-5.3 (glm-dsa, MLA + sparse indexer)
+// ---------------------------------------------------------------------------
+// Ground truth from the real GGUF header (unsloth/GLM-5.3-GGUF Q8_0):
+//   78 trunk layers + 1 NextN (nextn_predict_layers=1)
+//   attention.key_length = 576 (kv_lora_rank 512 + rope 64), head_count_kv = 1
+//   indexer: key_length 128, 21 of 78 layers are "full" indexers (glm-dsa.cpp default)
+
+const GLM53_CONFIG = {
+  hidden_size: 6144,
+  num_hidden_layers: 78,
+  num_attention_heads: 64,
+  num_key_value_heads: 64,
+  head_dim: 192,
+  kv_lora_rank: 512,
+  qk_rope_head_dim: 64,
+  v_head_dim: 256,
+  index_head_dim: 128,
+  index_topk: 2048,
+  num_nextn_predict_layers: 1,
+  indexer_types: (() => {
+    // glm-dsa.cpp GLM_5_2_DEFAULT_INDEXER_TYPES: 21 full (0,1,2, then every 4th)
+    const types = new Array(78).fill('shared');
+    [0, 1, 2, 6, 10, 14, 18, 22, 26, 30, 34, 38, 42, 46, 50, 54, 58, 62, 66, 70, 74]
+      .forEach(i => { types[i] = 'full'; });
+    return types;
+  })(),
+  vocab_size: 154880,
+};
+
+test('GLM-5.3 extractArch reads MLA params', () => {
+  const arch = extractArch(GLM53_CONFIG);
+  assert.equal(arch.isMla, true);
+  assert.equal(arch.mlaKLatent, 576); // 512 + 64
+  assert.equal(arch.numLayers, 79);   // 78 trunk + 1 NextN
+  assert.equal(arch.mtpLayers, 1);
+  assert.equal(arch.indexerLayers, 21);
+  assert.equal(arch.indexerKeyLen, 128);
+  assert.equal(arch.indexerForcedF16, false);
+});
+
+test('GLM-5.3 KV cache at q8_0 full ctx: MLA latent + indexer, no V', () => {
+  const arch = extractArch(GLM53_CONFIG);
+  const ctx = 131072, bpp = 1.0625;
+  const kv = calcKVCache(ctx, 512, arch, bpp, bpp);
+  // K latent: 78 × 576 × 131072 × 1.0625 bytes (bpp is bytes/element here)
+  const latentBytes = 78 * 576 * ctx * bpp;
+  const idxBytes = 21 * 128 * ctx * bpp;
+  assert.equal(kv.vGB, 0, 'MLA has no V tensor');
+  assert.ok(Math.abs(kv.kLatentGB - latentBytes / 1e9) < 1e-9, `latent ${kv.kLatentGB}`);
+  assert.ok(Math.abs(kv.indexerGB - idxBytes / 1e9) < 1e-9, `indexer ${kv.indexerGB}`);
+  assert.ok(Math.abs(kv.sizeGB - (latentBytes + idxBytes) / 1e9) < 1e-9);
+  // ~6.257 GB latent + ~0.374 GB indexer at 131K ctx, q8_0
+  assert.ok(Math.abs(kv.sizeGB - 6.63) < 0.01, `KV was ${kv.sizeGB}, expected ~6.63`);
+});
+
+test('GLM-5.3 MTP draft KV is dense MLA (latent, no V, no indexer)', () => {
+  const arch = extractArch(GLM53_CONFIG);
+  const ctx = 131072, bpp = 0.5625; // q4_0 draft
+  const mtp = calcMtpKV(ctx, arch, bpp, 0);
+  const expected = 1 * 576 * ctx * bpp;
+  assert.equal(mtp.vGB, 0);
+  assert.ok(Math.abs(mtp.sizeGB - expected / 1e9) < 1e-9, `MTP was ${mtp.sizeGB}`);
+  // ~0.0425 GB at 131K ctx q4_0
+  assert.ok(Math.abs(mtp.sizeGB - 0.0425) < 0.001);
+});
+
+test('withMtpDisabled drops GLM-5.3 NextN layer and draft KV', () => {
+  const arch = extractArch(GLM53_CONFIG);
+  const noMtp = withMtpDisabled(arch);
+  assert.equal(noMtp.numLayers, 78);
+  const ctx = 131072, bpp = 1.0625;
+  // Trunk KV unchanged, draft KV gone
+  assert.ok(Math.abs(calcKVCache(ctx, 512, arch, bpp, bpp).sizeGB
+                  - calcKVCache(ctx, 512, noMtp, bpp, bpp).sizeGB) < 1e-9);
+  assert.equal(calcMtpKV(ctx, noMtp, bpp, 0).sizeGB, 0);
+});
+
+// ---------------------------------------------------------------------------
+// KV cache + recurrent state: GLM-5.3-Flash (glm5next, KDA + DSA-MLA)
+// ---------------------------------------------------------------------------
+// Ground truth from the real GGUF header (unsloth/GLM-5.3-Flash-GGUF Q8_0) +
+// zai-org/GLM-5.3-Flash config.json (PR #27754 source):
+//   block_count 46 = 45 trunk + 1 NextN
+//   layer_types: 34 linear_attention (KDA) + 11 deepseek_sparse_attention (DSA)
+//   MLA: kv_lora_rank 512, qk_rope_head_dim 0 -> latent 512, no V
+//   indexer: 11 DSA layers x 3 heads (kpool=4) x 128, F16 forced
+//   KDA: head_dim 128, conv_kernel 4, n_head 64 -> F32 recurrent state
+
+const GLM53F_CONFIG = {
+  hidden_size: 4096,
+  num_hidden_layers: 45,
+  num_attention_heads: 64,
+  num_key_value_heads: 64,
+  kv_lora_rank: 512,
+  qk_nope_head_dim: 256,
+  qk_rope_head_dim: 0,
+  v_head_dim: 256,
+  index_head_dim: 128,
+  index_kpool: 4,
+  index_topk: 2048,
+  num_nextn_predict_layers: 1,
+  layer_types: (() => {
+    // DSA at 3,7,11,...,43 (every 4th starting at 3); rest are KDA
+    const types = new Array(45).fill('linear_attention');
+    for (let i = 3; i < 45; i += 4) types[i] = 'deepseek_sparse_attention';
+    return types;
+  })(),
+  indexer_types: new Array(45).fill('full'),
+  linear_attn_config: {
+    num_heads: 64,
+    head_dim: 128,
+    short_conv_kernel_size: 4,
+  },
+  vocab_size: 154880,
+};
+
+test('GLM-5.3-Flash extractArch reads hybrid MLA params', () => {
+  const arch = extractArch(GLM53F_CONFIG);
+  assert.equal(arch.isMla, true);
+  assert.equal(arch.mlaKLatent, 512);        // 512 + 0 (nope-only)
+  assert.equal(arch.numLayers, 46);          // 45 trunk + 1 NextN
+  assert.equal(arch.mtpLayers, 1);
+  assert.equal(arch.nMlaLayers, 11);         // DSA layers only
+  assert.equal(arch.nKdaLayers, 34);
+  assert.equal(arch.indexerLayers, 11);      // full AND DSA
+  assert.equal(arch.indexerKeyLen, 128);
+  assert.equal(arch.indexerHeads, 3);        // kpool pooling indexer
+  assert.equal(arch.indexerForcedF16, true);
+  assert.equal(arch.kdaHeadDim, 128);
+  assert.equal(arch.kdaDConv, 4);
+});
+
+test('GLM-5.3-Flash KV at 131K q8_0: 11 DSA latent + 11 DSA indexer (f16), no V', () => {
+  const arch = extractArch(GLM53F_CONFIG);
+  const ctx = 131072, bpp = 1.0625;
+  const kv = calcKVCache(ctx, 512, arch, bpp, bpp);
+  // latent: 11 x 512 x 131072 x 1.0625 = 0.77516 GB
+  const latentBytes = 11 * 512 * ctx * bpp;
+  // indexer: 11 x 3 x 128 x 131072 x 2.0 (F16) = 1.09951 GB
+  const idxBytes = 11 * 3 * 128 * ctx * 2.0;
+  assert.equal(kv.vGB, 0, 'MLA has no V tensor');
+  assert.ok(Math.abs(kv.kLatentGB - latentBytes / 1e9) < 1e-9, `latent ${kv.kLatentGB}`);
+  assert.ok(Math.abs(kv.indexerGB - idxBytes / 1e9) < 1e-9, `indexer ${kv.indexerGB}`);
+  assert.ok(Math.abs(kv.sizeGB - (latentBytes + idxBytes) / 1e9) < 1e-9);
+  // latent 0.7844 + indexer 1.1073 = ~1.8916 GB
+  assert.ok(Math.abs(kv.sizeGB - 1.8916) < 0.001, `KV was ${kv.sizeGB}, expected ~1.8916`);
+});
+
+test('GLM-5.3-Flash KDA recurrent state: 34 layers, F32, 1+rs_seq rows', () => {
+  const arch = extractArch(GLM53F_CONFIG);
+  // per layer: conv 3*(4-1)*64*128 = 73728 + S 64*128*128 = 1048576 = 1122304 elems
+  const bytesPerLayer = (3 * 3 * 64 * 128 + 64 * 128 * 128) * 4; // f32
+  const rs = calcRecurrentState(arch, 0);
+  assert.equal(rs.nRecurLayers, 34);
+  assert.equal(rs.nAttnLayers, 11);
+  assert.ok(Math.abs(rs.sizeGB - 34 * bytesPerLayer / 1e9) < 1e-9, `rs ${rs.sizeGB}`);
+  assert.ok(Math.abs(rs.sizeGB - 0.1524) < 0.001, `rs was ${rs.sizeGB}, expected ~0.1524`);
+  // MTP on: n_rs_seq=2 -> 3x the rows
+  const rsMtp = calcRecurrentState(arch, 2);
+  assert.ok(Math.abs(rsMtp.sizeGB - 3 * rs.sizeGB) < 1e-9);
+});
+
+test('GLM-5.3-Flash MTP draft KV: 1 NextN latent + its indexer (f16)', () => {
+  const arch = extractArch(GLM53F_CONFIG);
+  const ctx = 131072, mtpKbpp = 0.5625; // q4_0 draft
+  const mtp = calcMtpKV(ctx, arch, mtpKbpp, 0);
+  const kBytes = 1 * 512 * ctx * mtpKbpp;
+  const idxBytes = 1 * 3 * 128 * ctx * 2.0; // NextN layer also reads the indexer
+  assert.equal(mtp.vGB, 0);
+  assert.ok(Math.abs(mtp.sizeGB - (kBytes + idxBytes) / 1e9) < 1e-9, `MTP was ${mtp.sizeGB}`);
+  // latent 0.0377 + indexer 0.1007 = ~0.1384 GB
+  assert.ok(Math.abs(mtp.sizeGB - 0.1384) < 0.001, `MTP was ${mtp.sizeGB}, expected ~0.1384`);
+});
+
+test('withMtpDisabled drops GLM-5.3-Flash NextN layer and draft KV', () => {
+  const arch = extractArch(GLM53F_CONFIG);
+  const noMtp = withMtpDisabled(arch);
+  assert.equal(noMtp.numLayers, 45);
+  const ctx = 131072, bpp = 1.0625;
+  assert.ok(Math.abs(calcKVCache(ctx, 512, arch, bpp, bpp).sizeGB
+                  - calcKVCache(ctx, 512, noMtp, bpp, bpp).sizeGB) < 1e-9);
+  assert.equal(calcMtpKV(ctx, noMtp, bpp, 0).sizeGB, 0);
+  // Disabling MTP also drops n_rs_seq 2 -> 0: same 34 KDA layers, 3 rows -> 1 row
+  const rsMtpOn = calcRecurrentState(arch, 2);
+  const rsMtpOff = calcRecurrentState(noMtp, 0);
+  assert.equal(rsMtpOff.nRecurLayers, rsMtpOn.nRecurLayers);
+  assert.ok(Math.abs(rsMtpOff.sizeGB - rsMtpOn.sizeGB / 3) < 1e-9);
 });
 
 // ---------------------------------------------------------------------------

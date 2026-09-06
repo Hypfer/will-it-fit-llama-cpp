@@ -70,9 +70,41 @@ export function effectiveBpp(rowElems, bpp) {
  */
 export function extractArch(config) {
   const c = config.text_config || config;
-  const mtpLayers = c.mtp_num_hidden_layers || 0;
+  // MTP layers: transformers call them mtp_num_hidden_layers (Qwen) or
+  // num_nextn_predict_layers (GLM-5.x NextN head).
+  const mtpLayers = c.mtp_num_hidden_layers || c.num_nextn_predict_layers || 0;
   const numLayers = (c.num_hidden_layers || 0) + mtpLayers;
   const layerTypes = c.layer_types || null;
+  // MLA (Multi-head Latent Attention) — GLM-5.x / DeepSeek-style. The KV cache
+  // stores ONE compressed latent per layer (kv_lora_rank + rope dims) and has NO
+  // separate V tensor (llama-kv-cache.cpp: has_v = !is_mla()). GLM-5.x also keeps a
+  // sparse-attention indexer K cache on a subset of "full" layers
+  // (llama-kv-cache-dsa.cpp: both caches use type_k, so the K quant applies to both).
+  const isMla = !!c.kv_lora_rank;
+  // KDA (Gated DeltaNet) recurrent layers — GLM-5.3-Flash "linear_attention"
+  // layers. They keep a conv state + S matrix per layer (both F32), no KV cache.
+  const nKdaLayers = Array.isArray(layerTypes)
+    ? layerTypes.filter(t => t === 'linear_attention').length
+    : 0;
+  // MLA latent cache only exists on the full-attention (DSA) layers. For
+  // GLM-5.3 (glm-dsa) every trunk layer is MLA; for GLM-5.3-Flash (glm5next)
+  // only the deepseek_sparse_attention layers are (34 of 45 are KDA).
+  const nMlaLayers = isMla ? (Array.isArray(layerTypes)
+    ? layerTypes.filter(t => t === 'deepseek_sparse_attention').length || (c.num_hidden_layers || 0)
+    : (c.num_hidden_layers || 0)) : 0;
+  // Indexer K cache: only layers that are BOTH "full" indexers AND full-attention
+  // layers own one (glm5next filter_idx = trunk && !is_recr). GLM-5.3 has no
+  // layer_types, so count the "full" entries directly (21 of 78).
+  let indexerLayers = 0;
+  if (Array.isArray(c.indexer_types)) {
+    if (Array.isArray(layerTypes)) {
+      indexerLayers = c.indexer_types.filter((t, i) =>
+        (typeof t === 'string' ? t === 'full' : !!t) && layerTypes[i] === 'deepseek_sparse_attention'
+      ).length;
+    } else {
+      indexerLayers = c.indexer_types.filter(t => (typeof t === 'string' ? t === 'full' : !!t)).length;
+    }
+  }
   // Gemma4: num_kv_shared_layers layers at the end share their KV cache with
   // earlier layers and don't allocate their own. Only the first
   // (numLayers - num_kv_shared_layers) layers have KV (llama-hparams.cpp:267).
@@ -86,6 +118,22 @@ export function extractArch(config) {
     // Gemma 4: full-attention layers use global KV heads + head dim
     numGlobalKVHeads: c.num_global_key_value_heads || null,
     globalHeadDim: c.global_head_dim || null,
+    // MLA (GLM-5.x / DeepSeek-style): compressed-latent K cache, no V tensor.
+    isMla,
+    mlaKLatent: isMla ? (c.kv_lora_rank + (c.qk_rope_head_dim || 0)) : 0,
+    nMlaLayers,
+    indexerKeyLen: c.index_head_dim || 0,
+    indexerLayers,
+    // The pooling indexer (glm5next, kpool>0) caches key+gate+pooled-key (3 heads)
+    // and is forced to F16 (gate feeds a softmax — llama-model.cpp).
+    indexerHeads: c.index_kpool ? 3 : 1,
+    indexerForcedF16: !!c.index_kpool,
+    // KDA recurrent state (GLM-5.3-Flash "linear_attention" layers):
+    // conv state 3*(d_conv-1)*heads*head_dim + S state heads*head_dim^2, both F32.
+    // (llama-hparams.cpp n_embd_r/n_embd_s KDA branch; n_head = num_attention_heads)
+    kdaHeadDim: c.linear_attn_config?.head_dim || 0,
+    kdaDConv: c.linear_attn_config?.short_conv_kernel_size || 0,
+    nKdaLayers,
     slidingWindow: c.sliding_window || 0,
     layerTypes,
     fullAttnInterval: c.full_attention_interval || 1,
@@ -114,6 +162,28 @@ export function extractArch(config) {
  */
 export function calcKVCache(ctx, ubatch, arch, kBpp, vBpp) {
   const mainLayers = arch.numLayers - arch.mtpLayers;
+
+  // MLA (GLM-5.x / DeepSeek-style): one compressed-latent K tensor per MLA layer,
+  // NO V tensor (llama-kv-cache.cpp: has_v = !is_mla()). GLM-5.x additionally
+  // keeps a sparse-attention indexer K cache on a subset of layers
+  // (llama-kv-cache-dsa.cpp / llama-memory-hybrid.cpp). Both caches use type_k,
+  // so the K quant applies to both (the pooling indexer in glm5next is forced
+  // to F16 instead — gate feeds a softmax).
+  if (arch.isMla) {
+    const eKBpp = effectiveBpp(arch.mlaKLatent, kBpp);
+    const idxBpp = arch.indexerForcedF16 ? 2.0 : eKBpp.bpp;
+    const nIdx = Math.min(arch.indexerLayers, mainLayers);
+    const kBytes = arch.mlaKLatent * ctx * arch.nMlaLayers * eKBpp.bpp;
+    const idxBytes = arch.indexerKeyLen * arch.indexerHeads * ctx * nIdx * idxBpp;
+    return {
+      kGB: (kBytes + idxBytes) / 1e9, vGB: 0,
+      sizeGB: (kBytes + idxBytes) / 1e9,
+      nAttnLayers: arch.nMlaLayers, nSWA: 0, padPct: eKBpp.pct,
+      kLatentGB: kBytes / 1e9, indexerGB: idxBytes / 1e9,
+      nIndexerLayers: nIdx,
+    };
+  }
+
   // Gemma4: layers with index >= nKvLayers share their KV with earlier layers
   // and don't allocate their own cache tensors (llama-hparams.cpp:267 has_kv()).
   const nKvLayers = arch.numKvSharedLayers
@@ -177,9 +247,33 @@ export function withMtpDisabled(arch) {
 }
 
 /**
- * Recurrent state for hybrid models (Qwen3.6 linear_attention layers, Mamba-style).
+ * Recurrent state for hybrid models. Two shapes:
+ * - Mamba-style (Qwen3.6 linear_attention): conv + SSM state.
+ * - KDA / Gated DeltaNet (GLM-5.3-Flash "linear_attention"): conv state for
+ *   Q,K,V + the S matrix, both F32 (llama-hparams.cpp n_embd_r/n_embd_s KDA
+ *   branch, llama-memory-recurrent.cpp). Per layer, per row:
+ *     conv = 3 * (d_conv - 1) * n_head * head_dim
+ *     S    = n_head * head_dim^2
+ *   Rows = 1 + nRsSeq (same cell layout as the KV cache).
  */
 export function calcRecurrentState(arch, nRsSeq) {
+  // KDA / Gated DeltaNet (GLM-5.3-Flash "linear_attention" layers): keyed off
+  // layer_types + linear_attn_config, independent of the Mamba isHybrid flag
+  // (Flash has no full_attention_interval).
+  if (arch.nKdaLayers > 0 && (arch.kdaHeadDim || 0) > 0) {
+    const nAttnLayers = Array.isArray(arch.layerTypes)
+      ? arch.layerTypes.filter(t => t === 'deepseek_sparse_attention').length
+      : 0;
+    const nRecurLayers = arch.nKdaLayers;
+    const nHead = arch.numAttnHeads;
+    const dConv = arch.kdaDConv || 4;
+    const embdR = 3 * (dConv - 1) * nHead * arch.kdaHeadDim;
+    const embdS = arch.kdaHeadDim * arch.kdaHeadDim * nHead;
+    const nRows = 1 + nRsSeq;
+    const bytesPerLayer = (embdR + embdS) * nRows * 4; // f32
+    const totalBytes = nRecurLayers * bytesPerLayer;
+    return { sizeGB: totalBytes / 1e9, nRecurLayers, nAttnLayers };
+  }
   if (!arch.isHybrid || !arch.ssmDState) return { sizeGB: 0, nRecurLayers: 0 };
   const nMain = arch.numLayers - arch.mtpLayers;
   const nAttnLayers = Math.floor(nMain / arch.fullAttnInterval);
@@ -194,10 +288,23 @@ export function calcRecurrentState(arch, nRsSeq) {
 
 /**
  * MTP (multi-token prediction) draft KV cache.
- * The draft layers are full-attention layers (no SWA).
+ * The draft layers are full-attention layers (no SWA). For MLA models they are
+ * dense MLA layers, so the draft cache is the same compressed latent as the
+ * main cache, quantized with the draft K quant — no V tensor. GLM-5.3-Flash's
+ * NextN block additionally reads the indexer (PR #27754: the MTP ctx filter
+ * gives the nextn layer a lid cache, forced F16), so add one indexer cell.
  */
 export function calcMtpKV(ctx, arch, mtpkBpp, mtpvBpp) {
   if (!arch.mtpLayers) return { sizeGB: 0, kGB: 0, vGB: 0, padPct: 0 };
+  if (arch.isMla) {
+    const eKBpp = effectiveBpp(arch.mlaKLatent, mtpkBpp);
+    const idxBpp = arch.indexerForcedF16 ? 2.0 : eKBpp.bpp;
+    const kBytes = ctx * arch.mtpLayers * arch.mlaKLatent * eKBpp.bpp;
+    const idxBytes = arch.indexerForcedF16
+      ? ctx * arch.mtpLayers * arch.indexerKeyLen * arch.indexerHeads * idxBpp
+      : 0;
+    return { sizeGB: (kBytes + idxBytes) / 1e9, kGB: (kBytes + idxBytes) / 1e9, vGB: 0, padPct: eKBpp.pct };
+  }
   const nEmbK = arch.numKVHeads * arch.headDim;
   const eKBpp = effectiveBpp(nEmbK, mtpkBpp);
   const eVBpp = effectiveBpp(nEmbK, mtpvBpp);

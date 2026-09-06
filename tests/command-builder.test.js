@@ -48,6 +48,35 @@ test('buildCommand adds MTP flags when arch has mtpLayers', () => {
   assert.ok(cmd.includes('--cache-type-v-draft q4_0'));
 });
 
+test('buildCommand mirrors -ctv to -ctk for MLA (llama.cpp requires type_k==type_v)', () => {
+  // MLA: no V tensor, but llama.cpp hard-requires type_k == type_v or context
+  // init fails (llama-context.cpp). The V quant the user picked is irrelevant.
+  const cmd = buildCommand({
+    repo: 'unsloth/GLM-5.3-GGUF',
+    ctx: 131072, ubatch: 512,
+    kCacheType: 'q8_0', vCacheType: 'fp16',
+    arch: { mtpLayers: 1, isMla: true },
+    mtp: { kCacheType: 'q4_0', vCacheType: 'q4_0' },
+    dflash: null,
+  });
+  assert.ok(cmd.includes('--cache-type-k q8_0'));
+  assert.ok(cmd.includes('--cache-type-v q8_0'), 'MLA: -ctv must equal -ctk');
+  assert.ok(cmd.includes('--cache-type-k-draft q4_0'));
+  assert.ok(cmd.includes('--cache-type-v-draft q4_0'), 'MLA: -ctvd must equal -ctkd');
+});
+
+test('buildCommand omits cache types for MLA with fp16 K quant', () => {
+  const cmd = buildCommand({
+    repo: 'unsloth/GLM-5.3-GGUF',
+    ctx: 131072, ubatch: 512,
+    kCacheType: 'fp16', vCacheType: 'q8_0',
+    arch: { mtpLayers: 0, isMla: true },
+    mtp: null, dflash: null,
+  });
+  assert.ok(!cmd.includes('--cache-type-k'));
+  assert.ok(!cmd.includes('--cache-type-v'), 'fp16 default: nothing to emit');
+});
+
 test('buildCommand adds DFlash flags when sidecar detected', () => {
   const cmd = buildCommand({
     repo: 'unsloth/Muse-Glimmer-30B-GGUF',
