@@ -616,8 +616,93 @@ test('estimateVram: gemma4-assistant sidecar still shares KV (zero draft KV)', (
 });
 
 // ---------------------------------------------------------------------------
-// estimateVram end-to-end
+// KV cache + SWA pad: Kolibri-1 (kolibri1, GQA MoE with tiny 513 SWA window)
 // ---------------------------------------------------------------------------
+// Ground truth from the real GGUF header (Hob-forge/Kolibri-1-GGUF Q4_K_M,
+// range-fetched) + Aleph-Alpha/Kolibri-1 config.json — both agree:
+//   block_count 50 (40 SWA window 513 + 10 full, pattern 4 SWA + 1 full),
+//   head_count 48, head_count_kv 4, key_length = value_length = 128
+//   expert_count 384 × 6 used + 1 shared (78B-A3.5B MoE), vocab 128k, ctx 262144
+
+const KOLIBRI_CONFIG = {
+  hidden_size: 2560,
+  num_hidden_layers: 50,
+  num_attention_heads: 48,
+  num_key_value_heads: 4,
+  head_dim: 128,
+  vocab_size: 128000,
+  sliding_window: 513,
+  layer_types: (() => {
+    const types = [];
+    for (let i = 0; i < 50; i++) types.push((i + 1) % 5 === 0 ? 'full_attention' : 'sliding_attention');
+    return types;
+  })(),
+};
+
+test('Kolibri-1 extractArch reads GQA + SWA pattern', () => {
+  const arch = extractArch(KOLIBRI_CONFIG);
+  assert.equal(arch.numLayers, 50);
+  assert.equal(arch.numKVHeads, 4);
+  assert.equal(arch.headDim, 128);
+  assert.equal(arch.slidingWindow, 513);
+  assert.equal(arch.mtpLayers, 0);
+  assert.equal(arch.isMla, false);
+});
+
+test('Kolibri-1 KV pads the SWA cache to 256 cells (llama-kv-cache-iswa.cpp:73)', () => {
+  const arch = extractArch(KOLIBRI_CONFIG);
+  const ctx = 262144, ubatch = 512, bpp = 1.0625;
+  const kv = calcKVCache(ctx, ubatch, arch, bpp, bpp);
+  assert.equal(kv.nAttnLayers, 50);
+  assert.equal(kv.nSWA, 40);
+  // SWA cache: GGML_PAD(min(ctx, 513 + 512), 256) = GGML_PAD(1025, 256) = 1280 cells
+  const nEmbK = 4 * 128;
+  const kBytes = (10 * nEmbK * ctx + 40 * nEmbK * 1280) * bpp;
+  assert.ok(Math.abs(kv.kGB - kBytes / 1e9) < 1e-9, `K was ${kv.kGB}`);
+  assert.ok(Math.abs(kv.sizeGB - 2 * kBytes / 1e9) < 1e-9, `KV was ${kv.sizeGB}`);
+  // K ~1.454, KV ~2.908 GB at 256K q8_0 — without the pad ~2.897 (SWA 25% low)
+  assert.ok(Math.abs(kv.sizeGB - 2.9078) < 0.002, `KV was ${kv.sizeGB}, expected ~2.908`);
+});
+
+test('Kolibri-1 full-ctx SWA layers clamp to ctx (pad only applies below it)', () => {
+  const arch = extractArch(KOLIBRI_CONFIG);
+  // ctx smaller than window+ubatch: SWA cache = ctx, no pad beyond
+  const kv = calcKVCache(256, 512, arch, 1.0625, 1.0625);
+  const nEmbK = 4 * 128;
+  // both full and SWA layers hold 256 cells; sizeGB includes K + V
+  const expect = 2 * (10 * nEmbK * 256 + 40 * nEmbK * 256) * 1.0625 / 1e9;
+  assert.ok(Math.abs(kv.sizeGB - expect) < 1e-9, `KV was ${kv.sizeGB}`);
+});
+
+test('Kolibri-1 estimateVram: 6 quants from 9 files (3 sharded pairs summed)', () => {
+  // Real repo tree of Hob-forge/Kolibri-1-GGUF
+  const files = [
+    { path: 'Kolibri-1-Q2_K.gguf', size: 28634017760 },
+    { path: 'Kolibri-1-Q3_K_M.gguf', size: 37523996640 },
+    { path: 'Kolibri-1-Q4_K_M.gguf', size: 47454113472 },
+    { path: 'Q5_K_M/Kolibri-1-Q5_K_M-00001-of-00002.gguf', size: 44739588864 },
+    { path: 'Q5_K_M/Kolibri-1-Q5_K_M-00002-of-00002.gguf', size: 10849180800 },
+    { path: 'Q6_K/Kolibri-1-Q6_K-00001-of-00002.gguf', size: 44711048544 },
+    { path: 'Q6_K/Kolibri-1-Q6_K-00002-of-00002.gguf', size: 19520793120 },
+    { path: 'Q8_0/Kolibri-1-Q8_0-00001-of-00002.gguf', size: 44679459296 },
+    { path: 'Q8_0/Kolibri-1-Q8_0-00002-of-00002.gguf', size: 38455934400 },
+  ];
+  const arch = extractArch(KOLIBRI_CONFIG);
+  const est = estimateVram({ ggufFiles: files, ctx: 262144, ubatch: 512, arch, kBpp: 1.0625, vBpp: 1.0625, mtpkBpp: 0.5625, mtpvBpp: 0.5625 });
+  assert.equal(est.quants.length, 6);
+  const byName = Object.fromEntries(est.quants.map(q => [q.quant, q]));
+  // Sharded sizes summed: Q8_0 = 44679459296 + 38455934400 bytes
+  assert.ok(Math.abs(byName.Q8_0.sizeGB - 83135393696 / 1e9) < 1e-6);
+  assert.ok(Math.abs(byName.Q5_K_M.sizeGB - 55588769664 / 1e9) < 1e-6);
+  assert.ok(Math.abs(byName.Q6_K.sizeGB - 64231841664 / 1e9) < 1e-6);
+  // No MTP/rs for Kolibri — those columns must be zero
+  assert.equal(est.mtp.sizeGB, 0);
+  assert.equal(est.rs.sizeGB, 0);
+  // Total = weights + KV (padded) + compute
+  assert.ok(Math.abs(byName.Q4_K_M.total - (47.454113472 + 2.9078 + est.computeBuf)) < 0.01);
+});
+
+
 
 test('estimateVram aggregates per-quant totals with KV + compute', () => {
   const ggufFiles = [

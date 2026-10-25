@@ -2,7 +2,7 @@ import {
   QUANT_ORDER, sortQuants, parseQuant, isFirstPart, normalizeRepo,
   extractArch, estimateVram, calcMmprojCompute, withMtpDisabled,
 } from './vram-estimator.js';
-import { parseGgufHeader, extractDflashArch, extractClipArch, extractMtpArch } from './gguf-parser.js';
+import { parseGgufHeader, extractDflashArch, extractClipArch, extractMtpArch, ggufToConfig } from './gguf-parser.js';
 import { buildCommand } from './command-builder.js';
 
 // ---------------------------------------------------------------------------
@@ -37,9 +37,16 @@ async function getGGUFInfo(repoId) {
 
 async function getBaseModelConfig(repoId) {
   const info = await fetchJSON(`${HF_BASE}/api/models/${repoId}`);
-  const baseTag = (info.tags || []).find(t => typeof t === 'string' && t.startsWith('base_model:'));
+  // The tag comes in two shapes: "base_model:org/model" or
+  // "base_model:quantized:org/model". Prefer the plain one (the original
+  // weights repo with the full config.json); a quantized repo may itself only
+  // carry GGUFs.
+  const tags = (info.tags || []).filter(t => typeof t === 'string' && t.startsWith('base_model:'));
+  const baseTag = tags.find(t => !t.startsWith('base_model:quantized:')) || tags[0];
   if (!baseTag) return null;
-  const baseModel = baseTag.replace('base_model:', '').split(':')[0];
+  // strip "base_model:" and an optional "quantized:" prefix, then any
+  // ":revision" suffix on the model id itself
+  const baseModel = baseTag.replace('base_model:', '').replace(/^quantized:/, '').split(':')[0];
   return fetchJSON(`${HF_BASE}/${baseModel}/raw/main/config.json`);
 }
 
@@ -264,6 +271,31 @@ async function loadModel() {
       const baseConfig = await getBaseModelConfig(repo);
       if (baseConfig) arch = extractArch(baseConfig);
     } catch (e) { console.warn('Config fetch failed:', e); }
+
+    // Fallback: derive the arch from a real GGUF header (llama.cpp KV naming)
+    // when the base config.json is unavailable — private/removed base model,
+    // GGUF-only repos, or a config extractArch can't read. The header carries
+    // the same hyperparams llama.cpp itself loads (kolibri1, glm*, qwen*, …).
+    if (!arch) {
+      const firstQuant = cachedFiles
+        .filter(f =>
+          f.path.endsWith('.gguf') &&
+          !f.path.startsWith('mmproj') && !f.path.startsWith('imatrix') &&
+          !f.path.startsWith('dflash-') && !f.path.startsWith('MTP/') &&
+          !f.path.startsWith('mtp-'))
+        .sort((a, b) => b.size - a.size)[0];
+      if (firstQuant) {
+        try {
+          const buf = await fetchGgufHeaderBytes(repo, firstQuant.path);
+          const { metadata } = parseGgufHeader(buf);
+          const config = ggufToConfig(metadata);
+          if (config) arch = extractArch(config);
+          if (arch) console.info('Arch from GGUF header:', metadata['general.architecture']);
+        } catch (e) {
+          console.warn('GGUF header fallback failed:', e);
+        }
+      }
+    }
     cachedArch = arch;
 
     // Detect + parse DFlash sidecar
@@ -736,6 +768,7 @@ const MODEL_PRESETS = [
   ['Qwen3.5 4B', 'unsloth/Qwen3.5-4B-GGUF'],
 ];
 const MODEL_PRESETS_MOE = [
+  ['Kolibri-1 78B A3.5B', 'Hob-forge/Kolibri-1-GGUF'],
   ['Qwen3.6 35B A3B', 'unsloth/Qwen3.6-35B-A3B-GGUF'],
   ['Gemma4 26B A4B', 'unsloth/gemma-4-26B-A4B-it-GGUF'],
   ['Qwen3.8-Flash-Next 512B A56B', 'unsloth/Qwen3.8-Flash-Next-GGUF'],

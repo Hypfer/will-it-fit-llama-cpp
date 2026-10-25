@@ -246,7 +246,12 @@ export function calcKVCache(ctx, ubatch, arch, kBpp, vBpp) {
         const eKBpp = effectiveBpp(nEmbK, kBpp);
         const eVBpp = effectiveBpp(nEmbK, vBpp);
         maxPct = Math.max(maxPct, eKBpp.pct, eVBpp.pct);
-        const swaCtx = Math.min((arch.slidingWindow || ctx) + ubatch, ctx);
+        // llama.cpp sizes the SWA cache as GGML_PAD(min(ctx, n_swa + n_ubatch), 256)
+        // (llama-kv-cache-iswa.cpp:73 — "always padded to 256 for performance",
+        // issue #17037). The pad is a rounding error for big windows (2048 → 2560
+        // = +25% for Gemma4's 1024) but dominates small ones: Kolibri-1's 513 +
+        // ubatch 512 = 1025 → 1280 cells (+25%).
+        const swaCtx = Math.min(((arch.slidingWindow || ctx) + ubatch + 255) & ~255, ctx);
         kBytes += nEmbK * swaCtx * eKBpp.bpp;
         vBytes += nEmbK * swaCtx * eVBpp.bpp;
         nSWA++;

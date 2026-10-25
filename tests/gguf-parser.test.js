@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
-import { parseGgufHeader, extractDflashArch, extractClipArch, extractMtpArch } from '../src/js/gguf-parser.js';
+import { parseGgufHeader, extractDflashArch, extractClipArch, extractMtpArch, ggufToConfig } from '../src/js/gguf-parser.js';
 
 // Use the real GGUF header bytes (committed as test fixtures)
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -176,4 +176,65 @@ test('extractMtpArch builds architecture object from a generic nextn sidecar hea
 
 test('extractMtpArch returns null for arch without nextn metadata', () => {
   assert.equal(extractMtpArch({ 'general.architecture': 'qwen35', 'qwen35.block_count': 48 }), null);
+});
+
+// ---------------------------------------------------------------------------
+// Truncated header handling (partial range fetch)
+// ---------------------------------------------------------------------------
+// Real Kolibri-1 header (Hob-forge/Kolibri-1-GGUF, Q4_K_M): 46 KVs, of which
+// the 128k-token tokenizer arrays overrun the fetched range. The parser must
+// return every KV before the tokenizer, never throw, and skip tensor info.
+
+const KOLIBRI_BYTES = readFileSync(join(__dirname, 'fixtures', 'kolibri1_header.bin'));
+
+test('parseGgufHeader survives a truncated tokenizer array (Kolibri-1)', () => {
+  const { metadata, truncated, tensorInfos, nKV } = parseGgufHeader(KOLIBRI_BYTES);
+  assert.equal(truncated, true);
+  assert.equal(nKV, 46);
+  assert.equal(tensorInfos.length, 0); // tensor info unreachable past the cut
+  // Architecture keys come before the tokenizer — all must be present
+  assert.equal(metadata['general.architecture'], 'kolibri1');
+  assert.equal(metadata['kolibri1.block_count'], 50);
+  assert.equal(metadata['kolibri1.attention.head_count_kv'], 4);
+  assert.equal(metadata['kolibri1.attention.sliding_window'], 513);
+  assert.ok(Math.abs(metadata['kolibri1.attention.layer_norm_rms_epsilon'] - 1e-6) < 1e-12);
+  const pat = metadata['kolibri1.attention.sliding_window_pattern'];
+  assert.ok(Array.isArray(pat) && pat.length === 50);
+  assert.equal(pat.filter(Boolean).length, 40); // 40 SWA + 10 full
+  assert.equal(metadata['kolibri1.expert_count'], 384);
+  // The tokenizer array that killed the parser is marked, not thrown
+  assert.ok(String(metadata['tokenizer.ggml.tokens']).includes('truncated'));
+});
+
+test('parseGgufHeader does not throw on a buffer cut mid-KV', () => {
+  // Slice mid-way through the header: no exception, whatever fits is returned
+  const short = KOLIBRI_BYTES.subarray(0, 800);
+  const h = parseGgufHeader(short);
+  assert.equal(h.magic, 0x46554747);
+  assert.equal(h.truncated, true);
+});
+
+// ---------------------------------------------------------------------------
+// ggufToConfig — GGUF-header → config fallback for extractArch()
+// ---------------------------------------------------------------------------
+
+test('ggufToConfig maps kolibri1 GGUF keys to config shape', () => {
+  const { metadata } = parseGgufHeader(KOLIBRI_BYTES);
+  const cfg = ggufToConfig(metadata);
+  assert.equal(cfg.num_hidden_layers, 50);
+  assert.equal(cfg.num_attention_heads, 48);
+  assert.equal(cfg.num_key_value_heads, 4);
+  assert.equal(cfg.head_dim, 128);
+  assert.equal(cfg.sliding_window, 513);
+  assert.equal(cfg.max_position_embeddings, 262144);
+  // GGUF pattern: true = SWA layer → transformers sliding_attention
+  assert.equal(cfg.layer_types.length, 50);
+  assert.equal(cfg.layer_types[0], 'sliding_attention');
+  assert.equal(cfg.layer_types[4], 'full_attention');
+  assert.equal(cfg.layer_types.filter(t => t === 'sliding_attention').length, 40);
+});
+
+test('ggufToConfig returns null without architecture metadata', () => {
+  assert.equal(ggufToConfig({}), null);
+  assert.equal(ggufToConfig({ 'general.name': 'x' }), null);
 });

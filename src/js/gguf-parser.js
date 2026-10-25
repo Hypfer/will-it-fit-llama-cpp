@@ -89,6 +89,9 @@ class Reader {
 
   string() {
     const len = this.u64();
+    if (this.offset + len > this.dv.byteLength) {
+      throw new Error(`String of ${len} bytes at offset ${this.offset} exceeds buffer (${this.dv.byteLength})`);
+    }
     const bytes = new Uint8Array(this.dv.buffer, this.dv.byteOffset + this.offset, len);
     this.offset += len;
     return new TextDecoder('utf-8').decode(bytes);
@@ -150,53 +153,78 @@ export function parseGgufHeader(buffer, opts = {}) {
   }
 
   const metadata = {};
-  for (let i = 0; i < nKV; i++) {
+  // Set when the buffer ends mid-metadata (partial range fetch of a GGUF whose
+  // tokenizer arrays exceed the fetched range). We stop parsing cleanly and
+  // still return everything read so far — the architecture keys we need come
+  // before the huge tokenizer arrays in every real GGUF.
+  let truncated = false;
+  let i = 0;
+  for (; i < nKV; i++) {
     // On a partial range fetch we may hit the end of the buffer before reading
     // all KV pairs (e.g. tokenizer token arrays are huge). Bail out gracefully —
     // architecture metadata always comes first in practice.
-    if (r.remaining() < 16) break;
+    if (r.remaining() < 16) { truncated = true; break; }
 
-    const key = r.string();
-    const valType = r.u32();
+    let key, valType;
+    try {
+      key = r.string();
+      valType = r.u32();
+    } catch {
+      truncated = true;
+      break;
+    }
 
     let value;
-    if (valType === GGUF_META_TYPE.ARRAY) {
-      const elemType = r.u32();
-      // Skip large arrays (tokenizer tokens), but keep small architecture arrays
-      const arrayLen = r.u64();
-      if (arrayLen > 1000) {
-        // Try to skip; if we run out of buffer, stop (partial range fetch).
-        const skipOk = r.trySkip(arrayLen, elemType);
-        value = skipOk ? `<${arrayLen} items>` : `<${arrayLen} items, truncated>`;
-        if (!skipOk) break;
+    try {
+      if (valType === GGUF_META_TYPE.ARRAY) {
+        const elemType = r.u32();
+        // Skip large arrays (tokenizer tokens), but keep small architecture arrays
+        const arrayLen = r.u64();
+        if (arrayLen > 1000) {
+          // Try to skip; if we run out of buffer, stop (partial range fetch).
+          const skipOk = r.trySkip(arrayLen, elemType);
+          value = skipOk ? `<${arrayLen} items>` : `<${arrayLen} items, truncated>`;
+          if (!skipOk) truncated = true;
+        } else {
+          value = r.array(elemType, arrayLen);
+        }
       } else {
-        value = r.array(elemType, arrayLen);
+        value = r.scalar(valType);
+        if (typeof value === 'string' && value.length > maxMetaLen) {
+          value = `<${value.length} chars>`;
+        }
       }
-    } else {
-      value = r.scalar(valType);
-      if (typeof value === 'string' && value.length > maxMetaLen) {
-        value = `<${value.length} chars>`;
-      }
+    } catch {
+      // buffer ended mid-value (partial range fetch) — keep what we have
+      truncated = true;
+      break;
     }
     metadata[key] = value;
   }
 
   // Parse tensor info (name, n_dims, dims, type, data offset)
   // We don't need the tensor data, but the info is right after metadata.
-  // If buffer is too small, we just skip tensors.
+  // On a truncated buffer (partial range fetch) the reader sits mid-metadata —
+  // tensor parsing is impossible, return what we have.
   const tensorInfos = [];
-  for (let i = 0; i < nTensors; i++) {
-    if (r.remaining() < 8) break;
-    const name = r.string();
-    const nDims = r.u32();
-    const dims = [];
-    for (let d = 0; d < nDims; d++) dims.push(r.u64());
-    const ttype = r.u32();
-    const dataOffset = r.u64();
-    tensorInfos.push({ name, dims, type: GGUF_TYPES[ttype] || `type_${ttype}`, ttype, dataOffset });
+  if (!truncated) {
+    for (let i = 0; i < nTensors; i++) {
+      if (r.remaining() < 8) break;
+      try {
+        const name = r.string();
+        const nDims = r.u32();
+        const dims = [];
+        for (let d = 0; d < nDims; d++) dims.push(r.u64());
+        const ttype = r.u32();
+        const dataOffset = r.u64();
+        tensorInfos.push({ name, dims, type: GGUF_TYPES[ttype] || `type_${ttype}`, ttype, dataOffset });
+      } catch {
+        break;
+      }
+    }
   }
 
-  return { magic, version, nTensors, nKV, metadata, tensorInfos };
+  return { magic, version, nTensors, nKV, metadata, tensorInfos, truncated };
 }
 
 /**
@@ -304,6 +332,65 @@ export function extractMtpArch(metadata) {
   }
 
   return null;
+}
+
+/**
+ * Map a parsed GGUF metadata object to a transformers-config-shaped object for
+ * extractArch() (vram-estimator.js) — the fallback path when the base model's
+ * config.json is unavailable (private/removed base, GGUF-only repo).
+ *
+ * Reads the standard llama.cpp GGUF naming (llama-arch.cpp):
+ *   <arch>.block_count, <arch>.embedding_length, <arch>.attention.head_count,
+ *   <arch>.attention.head_count_kv, <arch>.attention.key_length,
+ *   <arch>.attention.sliding_window, <arch>.attention.sliding_window_pattern,
+ *   <arch>.context_length, <arch>.vocab_size, <arch>.nextn_predict_layers,
+ *   <arch>.attention.key_length_mla, <arch>.kv_lora_rank …
+ *
+ * sliding_window_pattern is a bool array where true = SWA layer (llama.cpp
+ * is_swa_impl); transformers layer_types use the opposite strings.
+ *
+ * @param {object} metadata - from parseGgufHeader()
+ * @returns {object|null} config-shaped object, or null if no recognizable arch
+ */
+export function ggufToConfig(metadata) {
+  const archName = metadata['general.architecture'];
+  if (!archName) return null;
+  const p = `${archName}.`;
+  const num = (k) => {
+    const v = metadata[p + k];
+    return typeof v === 'number' ? v : undefined;
+  };
+
+  const layerPattern = metadata[p + 'attention.sliding_window_pattern'];
+  const layerTypes = Array.isArray(layerPattern)
+    ? layerPattern.map(isSwa => (isSwa ? 'sliding_attention' : 'full_attention'))
+    : undefined;
+
+  // Per-layer head_count_kv arrays (GLM-5.3-Flash) mark which layers have KV;
+  // count_nonzero gives the DSA/full-attn layer count for the pattern-less case.
+  const headKvArr = metadata[p + 'attention.head_count_kv'];
+
+  const config = {
+    num_hidden_layers: num('block_count'),
+    hidden_size: num('embedding_length'),
+    num_attention_heads: num('attention.head_count'),
+    num_key_value_heads: typeof headKvArr === 'number' ? headKvArr : undefined,
+    head_dim: num('attention.key_length'),
+    sliding_window: num('attention.sliding_window'),
+    layer_types: layerTypes,
+    vocab_size: num('vocab_size'),
+    max_position_embeddings: num('context_length'),
+    num_nextn_predict_layers: num('nextn_predict_layers'),
+    kv_lora_rank: metadata[p + 'attention.kv_lora_rank'],
+    qk_rope_head_dim: metadata[p + 'rope.dimension_count'],
+  };
+
+  // Only return if the essentials are present; otherwise callers prefer
+  // whatever they already have.
+  if (config.num_hidden_layers == null || config.num_attention_heads == null) {
+    return null;
+  }
+  return config;
 }
 
 /**
