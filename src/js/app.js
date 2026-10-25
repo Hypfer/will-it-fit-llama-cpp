@@ -771,7 +771,7 @@ const MODEL_PRESETS_MOE = [
   ['Kolibri-1 78B A3.5B', 'Hob-forge/Kolibri-1-GGUF'],
   ['Qwen3.6 35B A3B', 'unsloth/Qwen3.6-35B-A3B-GGUF'],
   ['Gemma4 26B A4B', 'unsloth/gemma-4-26B-A4B-it-GGUF'],
-  ['Qwen3.8-Flash-Next 512B A56B', 'unsloth/Qwen3.8-Flash-Next-GGUF'],
+  ['Qwen3.8-Flash-Next 125B A6B', 'unsloth/Qwen3.8-Flash-Next-GGUF'],
   ['GLM-5.3 744B A40B', 'unsloth/GLM-5.3-GGUF'],
   ['GLM-5.3-Flash 321B A18B', 'unsloth/GLM-5.3-Flash-GGUF'],
 ];
