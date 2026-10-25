@@ -461,6 +461,161 @@ test('withMtpDisabled drops GLM-5.3-Flash NextN layer and draft KV', () => {
 });
 
 // ---------------------------------------------------------------------------
+// KV cache + recurrent state: Qwen3.8-Flash-Next (qwen4exp, hybrid + QSA indexer + PLE)
+// ---------------------------------------------------------------------------
+// Ground truth from the real GGUF header (unsloth/Qwen3.8-Flash-Next-GGUF Q8_0
+// part 1, range-fetched) + Qwen/Qwen3.8-Flash-Next config.json:
+//   block_count 48 (NO embedded MTP — it ships as MTP/mtp-*.gguf sidecar)
+//   36 linear_attention + 12 full_attention (interval 4)
+//   full attn: 2 KV heads x 256 (key_length = value_length = 256)
+//   ssm: conv 4, state 128, group 16, v-heads 48 -> inner 6144
+//   QSA indexer on the 12 full layers: key 128, V inherits model V dim 256 (unused)
+//   PLE on layer 1: ngram 3, conv 4, hc_count 4, hidden 2560
+
+const QWEN38_CONFIG = {
+  text_config: {
+    hidden_size: 2560,
+    num_hidden_layers: 48,
+    num_attention_heads: 24,
+    num_key_value_heads: 2,
+    head_dim: 256,
+    full_attention_interval: 4,
+    layer_types: (() => {
+      const types = [];
+      for (let i = 0; i < 48; i++) types.push((i + 1) % 4 === 0 ? 'full_attention' : 'linear_attention');
+      return types;
+    })(),
+    vocab_size: 248320,
+    linear_conv_kernel_dim: 4,
+    linear_num_key_heads: 16,
+    linear_key_head_dim: 128,
+    linear_num_value_heads: 48,
+    linear_value_head_dim: 128,
+    indexer_head_dim: 128,
+    indexer_kv_heads: 1,
+    indexer_n_heads: 4,
+    indexer_budget: 2048,
+    indexer_compress_ratio: 4,
+    hc_count: 4,
+    hc_lowrank: 320,
+    ngram_size: 3,
+    heads_per_ngram: 8,
+    ple_conv_kernel_size: 4,
+    ple_layer_ids: [2],
+    mtp_num_hidden_layers: 1, // config only — the GGUF ships it as a sidecar
+  },
+};
+
+test('Qwen3.8-Flash-Next extractArch reads qwen4exp params', () => {
+  const arch = extractArch(QWEN38_CONFIG);
+  assert.equal(arch.isMla, false);
+  assert.equal(arch.numLayers, 49);          // 48 trunk + config mtp (stripped for sidecar shape in app)
+  assert.equal(arch.mtpLayers, 1);
+  assert.equal(arch.isHybrid, true);
+  assert.equal(arch.ssmDState, 128);         // via linear_value_head_dim fallback
+  assert.equal(arch.ssmDInner, 6144);        // 48 x 128
+  assert.equal(arch.ssmNGroup, 16);
+  assert.equal(arch.ssmDConv, 4);
+  assert.equal(arch.indexerKeyLen, 128);
+  assert.equal(arch.isQsaIndexer, true);
+  assert.equal(arch.qsaIndexerLayers, 12);   // full-attn layers
+  assert.equal(arch.pleLayers, 1);
+  assert.equal(arch.pleConvState, 92160);    // (4-1)*3*4*2560
+});
+
+test('Qwen3.8-Flash-Next KV at 131K q8_0: 12 full attn + QSA indexer (K 256 k-pool, no V)', () => {
+  const arch = withMtpDisabled(extractArch(QWEN38_CONFIG));
+  const ctx = 131072, bpp = 1.0625;
+  const kv = calcKVCache(ctx, 512, arch, bpp, bpp);
+  // main K: 12 x 512 x ctx x bpp, V same (2 KV heads x 256)
+  const mainK = 512 * ctx * bpp * 12, mainV = 512 * ctx * bpp * 12;
+  // indexer (llama-memory-hybrid-idx.cpp @ df9beac7): K = indexer_head_size 128 ×
+  // kpool_row 2 (raw | pooled, qwen4exp.cpp) = 256 wide, MLA-fooled → NO V tensor
+  const idxK = 256 * ctx * bpp * 12;
+  assert.ok(Math.abs(kv.qsaIdxGB - idxK / 1e9) < 1e-9, `qsaIdx ${kv.qsaIdxGB}`);
+  // indexer K is folded into kGB so the table columns add up to the total
+  assert.ok(Math.abs(kv.kGB - (mainK + idxK) / 1e9) < 1e-9, `kGB ${kv.kGB}`);
+  assert.ok(Math.abs(kv.vGB - mainV / 1e9) < 1e-9, `vGB ${kv.vGB}`);
+  assert.ok(Math.abs(kv.sizeGB - (mainK + mainV + idxK) / 1e9) < 1e-9, `size ${kv.sizeGB}`);
+  // 1.7113 main + 0.4278 indexer = ~2.139 GB
+  assert.ok(Math.abs(kv.sizeGB - 2.139) < 0.001, `KV was ${kv.sizeGB}, expected ~2.139`);
+});
+
+test('Qwen3.8-Flash-Next recurrent state: 36 delta-net layers + 1 PLE conv row', () => {
+  const arch = withMtpDisabled(extractArch(QWEN38_CONFIG));
+  // per layer row: conv 3*(6144+2*16*128)=30720 + S 128*6144=786432 elems
+  const perRow = (30720 + 786432) * 4;
+  const pleRow = 92160 * 4;
+  const rs = calcRecurrentState(arch, 0);
+  assert.equal(rs.nRecurLayers, 36);
+  assert.equal(rs.nAttnLayers, 12);
+  // 36 rows + PLE row, all f32, 1 row
+  const oneRow = 36 * perRow + pleRow;
+  assert.ok(Math.abs(rs.sizeGB - oneRow / 1e9) < 1e-9, `rs ${rs.sizeGB}`);
+  assert.ok(Math.abs(rs.sizeGB - 0.118) < 0.001, `rs was ${rs.sizeGB}, expected ~0.118`);
+  // MTP on: n_rs_seq=2 -> 3 rows
+  const rsMtp = calcRecurrentState(arch, 2);
+  assert.ok(Math.abs(rsMtp.sizeGB - 3 * oneRow / 1e9) < 1e-9);
+});
+
+test('Qwen3.8-Flash-Next MTP is a sidecar: withMtpDisabled strips the config mtp layer', () => {
+  const arch = extractArch(QWEN38_CONFIG);
+  const noMtp = withMtpDisabled(arch);
+  assert.equal(noMtp.numLayers, 48);
+  assert.equal(noMtp.mtpLayers, 0);
+  // Trunk KV + recurrent unaffected by the strip
+  const ctx = 131072, bpp = 1.0625;
+  assert.ok(Math.abs(calcKVCache(ctx, 512, arch, bpp, bpp).sizeGB
+                  - calcKVCache(ctx, 512, noMtp, bpp, bpp).sizeGB) < 1e-9);
+  assert.equal(calcMtpKV(ctx, noMtp, bpp, bpp).sizeGB, 0);
+});
+
+test('estimateVram: qwen4exp sidecar MTP adds own draft KV (f16) + n_rs_seq rows on the target', () => {
+  // The sidecar is a full qwen4exp model (block_count 49 = 48 trunk + 1 nextn);
+  // its draft ctx (ctx_type MTP, llama-model.cpp filter il >= n_layer) keeps the
+  // nextn layer only: attn K+V (512+512) + QSA idx K (128×2) per ctx position.
+  // Draft cache types default to F16 (no -ctkd in the generated command).
+  const arch = withMtpDisabled(extractArch(QWEN38_CONFIG)); // sidecar-wins strip
+  const ctx = 262144, bpp = 1.0625;
+  const sidecar = { sizeGB: 4.137, arch: { numLayers: 1, vocabSize: 248320 } };
+  const est = estimateVram({
+    ggufFiles: [{ path: 'Q8_0/Qwen3.8-Flash-Next-Q8_0-00001-of-00006.gguf', size: 100e9 }],
+    ctx, ubatch: 512, arch, kBpp: bpp, vBpp: bpp, mtpkBpp: bpp, mtpvBpp: bpp,
+    mtpSidecar: sidecar,
+  });
+  // draft KV = (512 + 512 + 256) × ctx × 2.0 B (f16) for 1 layer
+  const expectKV = (512 + 512 + 256) * ctx * 2.0 / 1e9;
+  assert.ok(Math.abs(est.mtpSidecar.kv.sizeGB - expectKV) < 1e-9, `draft KV ${est.mtpSidecar.kv.sizeGB}`);
+  assert.ok(Math.abs(est.mtpSidecar.kv.sizeGB - 0.668) < 0.01, `draft KV ~0.67 GB, was ${est.mtpSidecar.kv.sizeGB}`);
+  // total = weights + draft KV + compute
+  assert.ok(Math.abs(est.mtpSidecar.total
+    - (sidecar.sizeGB + expectKV + est.mtpSidecar.computeGB)) < 1e-9);
+  // target recurrent state: n_rs_seq=2 → 3 rows even though mtpLayers was
+  // stripped (the sidecar drives it, need_n_rs_seq on the target ctx)
+  const rowBytes = (36 * (30720 + 786432) + 92160) * 4;
+  assert.ok(Math.abs(est.rs.sizeGB - 3 * rowBytes / 1e9) < 1e-9, `rs ${est.rs.sizeGB}`);
+  assert.ok(Math.abs(est.rs.sizeGB - 0.354) < 0.001, `rs ~0.354 GB, was ${est.rs.sizeGB}`);
+  // Without the sidecar the target stays at 1 row
+  const estNoSidecar = estimateVram({
+    ggufFiles: [{ path: 'Q8_0/Qwen3.8-Flash-Next-Q8_0-00001-of-00006.gguf', size: 100e9 }],
+    ctx, ubatch: 512, arch, kBpp: bpp, vBpp: bpp, mtpkBpp: bpp, mtpvBpp: bpp,
+  });
+  assert.ok(Math.abs(estNoSidecar.rs.sizeGB - rowBytes / 1e9) < 1e-9, `rs 1 row, was ${estNoSidecar.rs.sizeGB}`);
+});
+
+test('estimateVram: gemma4-assistant sidecar still shares KV (zero draft KV)', () => {
+  const est = estimateVram({
+    ggufFiles: [{ path: 'model-UD-Q4_K_XL.gguf', size: 16e9 }],
+    ctx: 131072, ubatch: 512,
+    arch: GLIMMER_ARCH,
+    kBpp: 1.0625, vBpp: 1.0625, mtpkBpp: 0.5625, mtpvBpp: 0.5625,
+    mtpSidecar: { sizeGB: 0.46, arch: GEMMA4_MTP_SIDECAR_ARCH },
+  });
+  assert.equal(est.mtpSidecar.kv.sizeGB, 0);
+  assert.ok(Math.abs(est.mtpSidecar.total - (0.46 + est.mtpSidecar.computeGB)) < 1e-9);
+});
+
+// ---------------------------------------------------------------------------
 // estimateVram end-to-end
 // ---------------------------------------------------------------------------
 

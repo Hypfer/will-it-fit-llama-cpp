@@ -109,6 +109,27 @@ export function extractArch(config) {
   // earlier layers and don't allocate their own. Only the first
   // (numLayers - num_kv_shared_layers) layers have KV (llama-hparams.cpp:267).
   const numKvSharedLayers = c.num_kv_shared_layers || 0;
+  // QSA indexer (qwen4exp / Qwen-Flash-Next): every full-attention layer keeps a
+  // per-position indexer key the sparse-attention graph scores to pick its blocks.
+  // It's a plain llama_kv_cache whose hparams are hand-tweaked (llama-memory-hybrid-idx.cpp):
+  //   n_head_kv → 1, n_embd_head_k_full = indexer_head_size × kpool_row (qwen4exp:
+  //   128 × 2 = 256 — raw key | pooled key, qwen4exp.cpp indexer_kpool_row = 2), and
+  //   is_mla-fooled so NO V tensor is allocated (commit 311d4211). The k-pool cache
+  //   stores both the raw per-token rows and the pooled rows for one block, hence
+  //   the ×2 width. The whole context stays cached — top_k only cuts the READ.
+  // Distinct from the GLM DSA lid cache (kv-cache-dsa.cpp, no k-pool, width =
+  // indexer_head_size, still V-less via the same MLA fooling).
+  const indexerKeyLen = c.index_head_dim || c.indexer_head_dim || 0;
+  const isQsaIndexer = !isMla && indexerKeyLen > 0 && Array.isArray(layerTypes);
+  // PLE (per-layer n-gram hash embeddings, qwen4exp): one linear-attention layer
+  // keeps a conv-history row of its own in the recurrent cache
+  // (llama-memory-recurrent.cpp cache_ple_r_l; n_embd_r/ple_conv_state =
+  //  (conv_kernel-1)*ngram_size*hc_count*hidden).
+  const pleLayers = Array.isArray(c.ple_layer_ids) ? c.ple_layer_ids.length : 0;
+  const pleConvState = pleLayers > 0
+    ? (Math.max(1, c.ple_conv_kernel_size || 4) - 1)
+      * (c.ngram_size || 0) * (c.hc_count || 1) * (c.hidden_size || 0)
+    : 0;
   return {
     hiddenSize: c.hidden_size,
     numLayers,
@@ -122,7 +143,18 @@ export function extractArch(config) {
     isMla,
     mlaKLatent: isMla ? (c.kv_lora_rank + (c.qk_rope_head_dim || 0)) : 0,
     nMlaLayers,
-    indexerKeyLen: c.index_head_dim || 0,
+    // QSA indexer (qwen4exp) — full-attention layers, per-position key, no V.
+    isQsaIndexer,
+    qsaIndexerLayers: isQsaIndexer
+      ? layerTypes.filter(t => t === 'full_attention').length
+      : 0,
+    // k-pool row count: qwen4exp caches "raw key | pooled key" (2 rows);
+    // glm5-next-style models aren't QSA (no full_attention layerTypes path here).
+    qsaKpoolRow: 2,
+    // PLE conv-history row (qwen4exp) — elems per row, F32, on pleLayers layers.
+    pleLayers,
+    pleConvState,
+    indexerKeyLen: c.index_head_dim || c.indexer_head_dim || 0,
     indexerLayers,
     // The pooling indexer (glm5next, kpool>0) caches key+gate+pooled-key (3 heads)
     // and is forced to F16 (gate feeds a softmax — llama-model.cpp).
@@ -140,7 +172,9 @@ export function extractArch(config) {
     numKvSharedLayers,
     ssmDConv: c.ssm_d_conv || c.linear_conv_kernel_dim,
     ssmDInner: c.ssm_d_inner || (c.linear_num_value_heads || 0) * (c.linear_value_head_dim || 0),
-    ssmDState: c.ssm_d_state,
+    // Qwen configs omit ssm_d_state and carry the state head size as
+    // linear_value_head_dim instead (both = 128 for Qwen3.x-Next).
+    ssmDState: c.ssm_d_state || c.linear_value_head_dim,
     ssmNGroup: c.ssm_n_group || c.linear_num_key_heads,
     isHybrid: !!(c.full_attention_interval && c.full_attention_interval > 1),
     mtpLayers,
@@ -231,7 +265,28 @@ export function calcKVCache(ctx, ubatch, arch, kBpp, vBpp) {
   }
 
   const totalBytes = kBytes + vBytes;
-  return { kGB: kBytes / 1e9, vGB: vBytes / 1e9, sizeGB: totalBytes / 1e9, nAttnLayers: nAttnCount, nSWA, padPct: maxPct };
+
+  // QSA indexer (qwen4exp / Qwen-Flash-Next): every full-attention layer keeps a
+  // per-position indexer key cache (llama-memory-hybrid-idx.cpp): K is
+  // [indexer_head_size × kpool_row, kv_size] wide (128 × 2 = 256 for qwen4exp —
+  // the raw per-token key plus the pooled key for one block, qwen4exp.cpp
+  // indexer_kpool_row = 2), and the cache is MLA-fooled (n_embd_head_v_mla_impl
+  // set) so llama_kv_cache allocates NO V tensor for it (commit 311d4211).
+  // The whole context stays cached — top_k only cuts the READ, not the cache.
+  let qsaIdxGB = 0, idxKBytes = 0;
+  if (arch.isQsaIndexer && arch.qsaIndexerLayers > 0) {
+    idxKBytes = arch.indexerKeyLen * (arch.qsaKpoolRow || 1) * ctx * arch.qsaIndexerLayers * kBpp;
+    qsaIdxGB = idxKBytes / 1e9;
+  }
+
+  // Fold the indexer K into the K total (like the MLA branch folds its indexer
+  // into K) so the table's K + V columns add up to the total; qsaIdxGB is kept
+  // separately for the breakdown line.
+  return {
+    kGB: (kBytes + idxKBytes) / 1e9, vGB: vBytes / 1e9,
+    sizeGB: (totalBytes + idxKBytes) / 1e9,
+    nAttnLayers: nAttnCount, nSWA, padPct: maxPct, qsaIdxGB,
+  };
 }
 
 /**
@@ -282,7 +337,11 @@ export function calcRecurrentState(arch, nRsSeq) {
   const embdS = arch.ssmDState * arch.ssmDInner;
   const nRows = 1 + nRsSeq;
   const bytesPerLayer = (embdR + embdS) * nRows * 4;
-  const totalBytes = nRecurLayers * bytesPerLayer;
+  let totalBytes = nRecurLayers * bytesPerLayer;
+  // PLE (qwen4exp / Qwen-Flash-Next): one linear-attention layer keeps an extra
+  // conv-history row of its own (cache_ple_r_l, llama-memory-recurrent.cpp) —
+  // (conv_kernel-1)*ngram*hc*hidden elems, F32, same (1+nRsSeq) rows as r/s.
+  if (arch.pleConvState) totalBytes += arch.pleLayers * arch.pleConvState * nRows * 4;
   return { sizeGB: totalBytes / 1e9, nRecurLayers, nAttnLayers };
 }
 
@@ -370,6 +429,39 @@ export function calcMtpDraftCompute(ubatch, mtpArch) {
 }
 
 /**
+ * MTP sidecar draft-KV estimate.
+ *
+ * Two sidecar shapes:
+ * - gemma4-assistant: ALL draft layers share the target's KV cache
+ *   (attention.shared_kv_layers == block_count) → zero own draft KV.
+ * - full-model sidecars (unsloth's qwen4exp / qwen35 MTP/mtp-*.gguf): the draft
+ *   context is ctx_type MTP, which allocates its own llama_memory_hybrid_idx /
+ *   llama_kv_cache keeping ONLY the nextn layer(s) (llama-model.cpp filters
+ *   il >= n_layer). Each draft layer costs the target's per-layer K+V plus, for
+ *   QSA archs, one indexer K row (indexerKeyLen × kpool_row, no V). The sidecar
+ *   is same-family as the target, so the target's dims apply.
+ *
+ * The generated sidecar command has no -ctkd/-ctvd, and the draft cache types
+ * default to F16 (common.h common_params_speculative_draft) → bpp 2.0.
+ */
+function calcMtpSidecarKV(ctx, arch, mtpArch, kBpp, vBpp) {
+  if (!mtpArch || !mtpArch.numLayers) return { sizeGB: 0, kGB: 0, vGB: 0 };
+  if (mtpArch.sharedKvLayers != null && mtpArch.sharedKvLayers >= mtpArch.numLayers) {
+    return { sizeGB: 0, kGB: 0, vGB: 0 }; // gemma4-assistant: shares the target's KV
+  }
+  if (!arch) return { sizeGB: 0, kGB: 0, vGB: 0 };
+  const nEmbK = arch.numKVHeads * arch.headDim;
+  let kBytes = nEmbK * ctx * mtpArch.numLayers * kBpp;
+  let vBytes = nEmbK * ctx * mtpArch.numLayers * vBpp;
+  if (arch.isQsaIndexer && arch.qsaIndexerLayers > 0) {
+    // The nextn layer is itself a QSA full-attn layer (compress_ratios has a
+    // pool size at the draft index) → its draft ctx gets an idx cache too.
+    kBytes += arch.indexerKeyLen * (arch.qsaKpoolRow || 1) * ctx * mtpArch.numLayers * kBpp;
+  }
+  return { sizeGB: (kBytes + vBytes) / 1e9, kGB: kBytes / 1e9, vGB: vBytes / 1e9 };
+}
+
+/**
  * Aggregate all per-quant VRAM totals for a given model config + user settings.
  *
  * @param {object} opts
@@ -397,8 +489,15 @@ export function estimateVram(opts) {
     ? calcKVCache(ctx, ubatch, arch, kBpp, vBpp)
     : { sizeGB: 0, kGB: 0, vGB: 0, nAttnLayers: 0, nSWA: 0, padPct: 0 };
 
-  // Recurrent state (hybrid models)
-  const nRsSeq = arch && arch.mtpLayers ? 2 : 0;
+  // Recurrent state (hybrid models). --spec-type draft-mtp/dflash sets the
+  // TARGET's n_rs_seq = draft.n_max (need_n_rs_seq, common.h) for archs that
+  // support recurrent rollback (QWEN4EXP, QWEN35, GLM5_NEXT, …), so MTP
+  // drafting — embedded head OR sidecar file — grows the recurrent rows to
+  // 1 + n_rs_seq regardless of which shape it takes. The generated command
+  // uses --spec-draft-n-max 2 → n_rs_seq = 2 → 3 rows.
+  const hasRecurrentState = !!(arch && (arch.isHybrid || arch.nKdaLayers > 0));
+  const mtpActive = !!(arch && arch.mtpLayers > 0) || !!mtpSidecar;
+  const nRsSeq = hasRecurrentState && mtpActive ? 2 : 0;
   const rs = arch ? calcRecurrentState(arch, nRsSeq) : { sizeGB: 0, nRecurLayers: 0 };
 
   // MTP draft KV
@@ -417,11 +516,16 @@ export function estimateVram(opts) {
     dflashTotal = dflash.sizeGB;
   }
 
-  // MTP sidecar: weights + draft compute buffer (zero KV — shared with target)
+  // MTP sidecar: weights + draft compute buffer + own draft KV for full-model
+  // sidecars (gemma4-assistant shares the target's KV → zero). The draft context
+  // defaults to F16 cache types (no -ctkd in the command) → bpp 2.0.
   const mtpSidecarCompute = mtpSidecar && mtpSidecar.arch
     ? calcMtpDraftCompute(ubatch, mtpSidecar.arch)
     : 0;
-  const mtpSidecarTotal = mtpSidecar ? (mtpSidecar.sizeGB + mtpSidecarCompute) : 0;
+  const mtpSidecarKV = mtpSidecar && mtpSidecar.arch
+    ? calcMtpSidecarKV(ctx, arch, mtpSidecar.arch, 2.0, 2.0)
+    : { sizeGB: 0, kGB: 0, vGB: 0 };
+  const mtpSidecarTotal = mtpSidecar ? (mtpSidecar.sizeGB + mtpSidecarCompute + mtpSidecarKV.sizeGB) : 0;
 
   // Per-quant totals
   const quantMap = {};
@@ -442,7 +546,7 @@ export function estimateVram(opts) {
     quants, kv, rs, mtp, computeBuf,
     dflash: { ...dflash, kv: dflashKV, total: dflashTotal },
     mtpSidecar: mtpSidecar
-      ? { ...mtpSidecar, computeGB: mtpSidecarCompute, total: mtpSidecarTotal }
+      ? { ...mtpSidecar, computeGB: mtpSidecarCompute, kv: mtpSidecarKV, total: mtpSidecarTotal }
       : null,
   };
 }

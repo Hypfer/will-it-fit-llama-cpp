@@ -112,13 +112,20 @@ async function loadDflashSidecar(repoId, files) {
  * per-quant variants). Matches the DFlash root-level convention.
  */
 function findMtpSidecar(files) {
-  const rootLevel = files.find(f =>
-    f.path.startsWith('mtp-') && f.path.endsWith('.gguf')
-  );
-  if (rootLevel) return rootLevel;
-  return files.find(f =>
-    f.path.startsWith('MTP/mtp-') && f.path.endsWith('.gguf')
-  );
+  // Skip "shared"-variant drafts (qwen4exp ships MTP/mtp-*-shared-*.gguf): the
+  // non-shared file is the full MTP draft. Prefer Q8_0, then the others by
+  // quality, since the tree order is not a quality order.
+  const isMtp = f => f.path.endsWith('.gguf') && !/(-|\/)shared/.test(f.path);
+  const rootLevel = files.find(f => f.path.startsWith('mtp-') && isMtp(f));
+  const candidates = (rootLevel ? [rootLevel] : [])
+    .concat(files.filter(f => f.path.startsWith('MTP/mtp-') && isMtp(f)));
+  if (!candidates.length) return null;
+  const PREFERENCE = ['Q8_0', 'Q6_K', 'Q5_K', 'Q4_K', 'BF16'];
+  for (const pref of PREFERENCE) {
+    const match = candidates.find(f => f.path.toUpperCase().includes(pref.toUpperCase()));
+    if (match) return match;
+  }
+  return candidates[candidates.length - 1];
 }
 
 /**
@@ -273,7 +280,12 @@ async function loadModel() {
     // repos ship for small quants. The KV quant dropdowns only apply to the
     // embedded path — the sidecar shares the target's KV cache.
     const mtpSection = document.getElementById('mtp-section');
-    const hasEmbeddedMtp = !!(arch && arch.mtpLayers > 0);
+    // MTP is either EMBEDDED (the main GGUF contains the nextn layer — GLM-5.x,
+    // Qwen3.6) or a SEPARATE sidecar file (the main GGUF has no nextn; the config's
+    // mtp_num_hidden_layers describes the sidecar — Qwen3.8-Flash-Next). A shipped
+    // mtp-*.gguf means sidecar, so the embedded count must not apply to the main
+    // model (it would double-count a draft the main file doesn't have).
+    const hasEmbeddedMtp = !!(arch && arch.mtpLayers > 0) && !cachedMtpSidecar;
     if (mtpSection) {
       mtpSection.style.display = (hasEmbeddedMtp || cachedMtpSidecar) ? 'block' : 'none';
       const info = document.getElementById('mtp-info');
@@ -407,11 +419,14 @@ function check() {
 
     // Embedded MTP (in the main GGUF): when the toggle is off, estimate as if
     // the MTP tensors were absent (llama.cpp skips them when spec decoding is
-    // disabled — no draft KV, no extra rs_seq).
+    // disabled — no draft KV, no extra rs_seq). A sidecar means the MTP is NOT
+    // in the main file, so the config's mtp count must be stripped from the
+    // main arch (it belongs to the sidecar, estimated separately below).
+    const hasEmbeddedMtp = !!(arch && arch.mtpLayers > 0) && !cachedMtpSidecar;
     const mtpEnabled = document.getElementById('mtp-toggle')?.checked ?? true;
-    const effArch = (arch && arch.mtpLayers > 0 && !mtpEnabled)
-      ? withMtpDisabled(arch)
-      : arch;
+    // Strip the config's mtp count from the main arch unless the main file
+    // actually embeds it (a sidecar owns it instead).
+    const effArch = (arch && (!hasEmbeddedMtp || !mtpEnabled)) ? withMtpDisabled(arch) : arch;
 
     // MLA models (GLM-5.x / DeepSeek-style) store one compressed latent K cache
     // and no V tensor (has_v = !is_mla()), so there is nothing for a V quant to
@@ -490,7 +505,11 @@ function renderMeta(repo, vram, ctx, arch, est, ubatch, mmprojGpuGB = 0, mmprojC
   const vLabel = document.getElementById('v-quant').selectedOptions[0].textContent;
   const isMla = !!(arch && arch.isMla);
   const { kv, rs, mtp, computeBuf } = est;
-  const nRsSeq = arch && arch.mtpLayers ? 2 : 0;
+  // n_rs_seq applies whenever MTP drafting is active (embedded head OR sidecar
+  // file) on a rollback-capable hybrid — mirrors estimateVram's nRsSeq.
+  const mtpToggleOn = document.getElementById('mtp-toggle')?.checked ?? true;
+  const nRsSeq = (arch && (arch.isHybrid || arch.nKdaLayers > 0)
+                  && (arch.mtpLayers > 0 || (cachedMtpSidecar && mtpToggleOn))) ? 2 : 0;
 
   let metaLines = `<div><strong>${repo}</strong></div>`;
   // MLA has one combined latent cache: show it as a single KV quant.
@@ -508,6 +527,9 @@ function renderMeta(repo, vram, ctx, arch, est, ubatch, mmprojGpuGB = 0, mmprojC
     } else {
       let kvDetail = `K: ${kv.kGB.toFixed(2)}, V: ${kv.vGB.toFixed(2)}, ${kv.nAttnLayers} attn`;
       if (kv.nSWA > 0) kvDetail += `, ${kv.nSWA} SWA (win: ${arch.slidingWindow})`;
+      if (kv.qsaIdxGB > 0) {
+        kvDetail += ` + QSA indexer: ${kv.qsaIdxGB.toFixed(2)} (${arch.qsaIndexerLayers} full-attn × key ${arch.indexerKeyLen * (arch.qsaKpoolRow || 1)}, no V)`;
+      }
       if (kv.padPct > 0) kvDetail += `, CUDA pad: +${kv.padPct.toFixed(1)}%`;
       metaLines += `<div>KV cache: ${kv.sizeGB.toFixed(2)} GB (${kvDetail})</div>`;
     }
@@ -540,6 +562,7 @@ function renderMeta(repo, vram, ctx, arch, est, ubatch, mmprojGpuGB = 0, mmprojC
   if (est.mtpSidecar && est.mtpSidecar.total > 0) {
     const m = est.mtpSidecar;
     let detail = `${m.sizeGB.toFixed(2)} GB weights`;
+    if (m.kv && m.kv.sizeGB > 0.001) detail += ` + ${m.kv.sizeGB.toFixed(2)} GB draft KV (f16)`;
     if (m.computeGB > 0.001) detail += ` + ${m.computeGB.toFixed(2)} GB compute`;
     const mtpLink = cachedMtpSidecar?.path
       ? `<a href="${HF_BASE}/${repo}/blob/main/${cachedMtpSidecar.path}" target="_blank" class="sidecar-link">${m.fileName || 'sidecar'}</a>`
@@ -715,6 +738,7 @@ const MODEL_PRESETS = [
 const MODEL_PRESETS_MOE = [
   ['Qwen3.6 35B A3B', 'unsloth/Qwen3.6-35B-A3B-GGUF'],
   ['Gemma4 26B A4B', 'unsloth/gemma-4-26B-A4B-it-GGUF'],
+  ['Qwen3.8-Flash-Next 512B A56B', 'unsloth/Qwen3.8-Flash-Next-GGUF'],
   ['GLM-5.3 744B A40B', 'unsloth/GLM-5.3-GGUF'],
   ['GLM-5.3-Flash 321B A18B', 'unsloth/GLM-5.3-Flash-GGUF'],
 ];

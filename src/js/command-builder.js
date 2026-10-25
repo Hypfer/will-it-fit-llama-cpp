@@ -8,7 +8,8 @@
  * @property {object|null} arch         - main model architecture (from extractArch)
  * @property {object|null} mtp          - MTP options {kCacheType, vCacheType} or null
  * @property {object|null} dflash       - DFlash sidecar {fileName, kCacheType, vCacheType} or null
- * @property {object|null} mtpSidecar   - MTP sidecar {fileName} or null (shared KV)
+ * @property {object|null} mtpSidecar   - MTP sidecar {fileName} or null (own draft
+ *                                        KV for full-model sidecars; gemma4 shares)
  * @property {object|null} mmproj       - mmproj options {fileName, cpuOnly} or null
  */
 
@@ -54,9 +55,10 @@ export function buildCommand(cfg) {
     if (dflash.vCacheType && dflash.vCacheType !== 'fp16') cmd += ` --cache-type-v-draft ${dflash.vCacheType}`;
   }
 
-  // MTP sidecar (memory-shared draft: shares the target's KV cache,
-  // so no draft K/V quantization flags — nothing separate to quantize).
-  // Mutually exclusive with the embedded-MTP path above.
+  // MTP sidecar (separate draft model file; mutually exclusive with the
+  // embedded-MTP path above). Full-model sidecars (qwen4exp/qwen35 MTP/mtp-*.gguf)
+  // run their own ctx_type-MTP context with its own KV cache, which defaults to
+  // F16 — no draft K/V flags unless the user picks a quant below.
   if (mtpSidecar && mtpSidecar.fileName && !(arch && arch.mtpLayers > 0)) {
     cmd += ` --spec-type draft-mtp --spec-draft-n-max 2`;
     cmd += ` -md ./models/<${mtpSidecar.fileName}>`;
