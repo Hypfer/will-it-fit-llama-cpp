@@ -238,3 +238,154 @@ test('ggufToConfig returns null without architecture metadata', () => {
   assert.equal(ggufToConfig({}), null);
   assert.equal(ggufToConfig({ 'general.name': 'x' }), null);
 });
+
+// ---------------------------------------------------------------------------
+// Inkling-2 Mini (ggml-org/Inkling-2-Mini-GGUF, IQ4_NL): real header of the
+// inkling2_loop variant — per-layer head arrays, loop core, shortconv state
+// ---------------------------------------------------------------------------
+
+const INKLING_BYTES = readFileSync(join(__dirname, 'fixtures', 'inkling2_header.bin'));
+// Real mmproj header of the same repo (BF16 vision tower)
+const INKLING_MMPROJ_BYTES = readFileSync(join(__dirname, 'fixtures', 'inkling2_mmproj_header.bin'));
+
+test('parseGgufHeader reads inkling2_loop architecture metadata', () => {
+  const { metadata, nKV } = parseGgufHeader(INKLING_BYTES);
+  assert.equal(metadata['general.architecture'], 'inkling2_loop');
+  assert.equal(metadata['general.name'], 'Inkling 2 Mini');
+  assert.equal(metadata['general.size_label'], '128x1.8B');
+  assert.ok(nKV >= 45);
+});
+
+test('parseGgufHeader reads inkling2_loop hparams', () => {
+  const { metadata } = parseGgufHeader(INKLING_BYTES);
+  assert.equal(metadata['inkling2_loop.block_count'], 24);
+  assert.equal(metadata['inkling2_loop.embedding_length'], 2304);
+  assert.equal(metadata['inkling2_loop.context_length'], 1048576);
+  assert.equal(metadata['inkling2_loop.vocab_size'], 201024);       // padded
+  assert.equal(metadata['inkling2_loop.vocab_size_unpadded'], 200058);
+  assert.equal(metadata['inkling2_loop.attention.key_length'], 128);
+  assert.equal(metadata['inkling2_loop.attention.key_length_swa'], 128);
+  assert.equal(metadata['inkling2_loop.attention.sliding_window'], 1024);
+  assert.equal(metadata['inkling2_loop.shortconv.l_cache'], 4);
+  assert.equal(metadata['inkling2_loop.attn_res.block_size'], 6);
+  assert.equal(metadata['inkling2_loop.expert_count'], 128);
+  assert.equal(metadata['inkling2_loop.expert_used_count'], 8);
+});
+
+test('parseGgufHeader reads per-layer head arrays and the layer pattern', () => {
+  const { metadata } = parseGgufHeader(INKLING_BYTES);
+  // The converter writes per-layer head counts (SWA variants resolved per layer)
+  const heads = metadata['inkling2_loop.attention.head_count'];
+  const kvHeads = metadata['inkling2_loop.attention.head_count_kv'];
+  assert.ok(Array.isArray(heads) && heads.length === 24);
+  assert.ok(heads.every(h => h === 24));
+  assert.ok(Array.isArray(kvHeads) && kvHeads.length === 24);
+  assert.ok(kvHeads.every(h => h === 8));
+  // 20 SWA layers, full attention at 5, 11, 17, 23
+  const pat = metadata['inkling2_loop.attention.sliding_window_pattern'];
+  assert.equal(pat.filter(Boolean).length, 20);
+  for (const i of [5, 11, 17, 23]) assert.equal(pat[i], false);
+});
+
+test('parseGgufHeader reads the loop core config', () => {
+  const { metadata } = parseGgufHeader(INKLING_BYTES);
+  assert.equal(metadata['inkling2_loop.loop.start'], 6);
+  assert.equal(metadata['inkling2_loop.loop.end'], 18);
+  assert.equal(metadata['inkling2_loop.loop.count'], 3);
+  assert.equal(metadata['inkling2_loop.loop.gate_rank'], 64);
+  assert.equal(metadata['inkling2_loop.loop.varying'], false);
+});
+
+test('ggufToConfig maps inkling2_loop GGUF keys to config shape', () => {
+  const { metadata } = parseGgufHeader(INKLING_BYTES);
+  const cfg = ggufToConfig(metadata);
+  assert.equal(cfg.model_type, 'inkling2_loop');
+  assert.equal(cfg.num_hidden_layers, 24);
+  assert.equal(cfg.hidden_size, 2304);
+  assert.deepEqual(cfg.loop_config, { core_start: 6, core_end: 18, num_passes: 3 });
+  assert.equal(cfg.sconv_kernel_size, 4);
+  assert.equal(cfg.sliding_window_size, 1024);
+  assert.equal(cfg.head_dim, 128);
+  assert.equal(cfg.swa_head_dim, 128);
+  assert.equal(cfg.vocab_size, 201024); // padded
+  assert.equal(cfg.max_position_embeddings, 1048576);
+  // per-layer arrays pass through for extractInkling2's positional resolution
+  assert.ok(Array.isArray(cfg.num_key_value_heads) && cfg.num_key_value_heads.length === 24);
+  // GGUF pattern: true = SWA -> sliding_attention
+  assert.equal(cfg.layer_types.length, 24);
+  assert.equal(cfg.layer_types.filter(t => t === 'sliding_attention').length, 20);
+  assert.equal(cfg.layer_types[5], 'full_attention');
+});
+
+test('extractClipArch reads the Inkling-2 Mini vision tower', () => {
+  const { metadata } = parseGgufHeader(INKLING_MMPROJ_BYTES);
+  assert.equal(metadata['clip.vision.projector_type'], 'inkling2v');
+  const clip = extractClipArch(metadata);
+  assert.equal(clip.nEmbmd, 1024);
+  assert.equal(clip.nLayer, 23);
+  assert.equal(clip.nFf, 4096);
+  assert.equal(clip.imageSize, 640);
+  assert.equal(clip.patchSize, 20);
+  // nPatches = (640/20)^2 = 1024
+  assert.equal(clip.nPatches, 1024);
+});
+
+// ---------------------------------------------------------------------------
+// unsloth/Inkling-2-Mini-GGUF root UD quants are loop models in unsloth's
+// layout: arch "inkling2" with block_count ALREADY the expanded cache-slot
+// count (48), loop tensors present, only blk.0..23 weights, and the loop
+// described by num_loops + loop.core_start/.core_end instead of loop.count.
+// The original inkling2_loop layout (loop.count + physical block_count) lives
+// in Mainline_Support/*.gguf_file — wrong extension, excluded by the app.
+// The dspark- sidecar is a dflash-arch GGUF plus the Markov/confidence heads.
+// ---------------------------------------------------------------------------
+
+const INKLING_UNROLLED_BYTES = readFileSync(join(__dirname, 'fixtures', 'inkling2_unsloth_header.bin'));
+const DSPARK_BYTES = readFileSync(join(__dirname, 'fixtures', 'dspark_header.bin'));
+
+test('parseGgufHeader reads the unsloth loop layout (pre-expanded block_count)', () => {
+  const { metadata } = parseGgufHeader(INKLING_UNROLLED_BYTES);
+  assert.equal(metadata['general.architecture'], 'inkling2');
+  // Loop model in unsloth's layout: slot count baked into block_count, loop
+  // described by num_loops + core_start/core_end (no loop.count)
+  assert.equal(metadata['inkling2.block_count'], 48);
+  assert.equal(metadata['inkling2.num_loops'], 3);
+  assert.equal(metadata['inkling2.loop.core_start'], 6);
+  assert.equal(metadata['inkling2.loop.core_end'], 18);
+  assert.equal(metadata['inkling2.loop.count'], undefined);
+  // Pattern already covers all 48 slots
+  const pat = metadata['inkling2.attention.sliding_window_pattern'];
+  assert.equal(pat.length, 48);
+  assert.equal(pat.filter(Boolean).length, 40);
+});
+
+test('ggufToConfig maps the unsloth layout as pre_expanded (never re-expands)', () => {
+  const { metadata } = parseGgufHeader(INKLING_UNROLLED_BYTES);
+  const cfg = ggufToConfig(metadata);
+  assert.equal(cfg.model_type, 'inkling2');
+  assert.equal(cfg.num_hidden_layers, 48);
+  assert.deepEqual(cfg.loop_config, { core_start: 6, core_end: 18, num_passes: 3, pre_expanded: true });
+  assert.equal(cfg.layer_types.length, 48);
+  assert.equal(cfg.layer_types.filter(t => t === 'sliding_attention').length, 40);
+  assert.equal(cfg.sconv_kernel_size, 4);
+  assert.equal(cfg.vocab_size, 201024);
+});
+
+test('extractDflashArch reads the dspark sidecar (dflash arch + markov heads)', () => {
+  const { metadata } = parseGgufHeader(DSPARK_BYTES);
+  // The sidecar is still a dflash-arch GGUF — the variant comes from the
+  // tensors (llama_model_dflash_variant), the metadata keys are all dflash.*
+  assert.equal(metadata['general.architecture'], 'dflash');
+  assert.equal(metadata['dflash.block_count'], 3);
+  assert.equal(metadata['dflash.block_size'], 8);
+  assert.equal(metadata['dflash.attention.head_count'], 24);
+  assert.equal(metadata['dflash.attention.head_count_kv'], 8);
+  assert.equal(metadata['dflash.attention.key_length'], 128);
+  assert.equal(metadata['dflash.attention.sliding_window'], 1024);
+  const arch = extractDflashArch(metadata);
+  assert.equal(arch.numLayers, 3);
+  assert.equal(arch.numKVHeads, 8);
+  assert.equal(arch.headDim, 128);
+  assert.equal(arch.slidingWindow, 1024);
+  assert.deepEqual(arch.layerTypes, ['sliding_attention', 'full_attention', 'sliding_attention']);
+});

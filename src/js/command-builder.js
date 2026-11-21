@@ -7,7 +7,7 @@
  * @property {string} vCacheType        - e.g. "q8_0", "fp16"
  * @property {object|null} arch         - main model architecture (from extractArch)
  * @property {object|null} mtp          - MTP options {kCacheType, vCacheType} or null
- * @property {object|null} dflash       - DFlash sidecar {fileName, kCacheType, vCacheType} or null
+ * @property {object|null} dflash       - DFlash-family sidecar {fileName, specType, kCacheType, vCacheType} or null
  * @property {object|null} mtpSidecar   - MTP sidecar {fileName} or null (own draft
  *                                        KV for full-model sidecars; gemma4 shares)
  * @property {object|null} mmproj       - mmproj options {fileName, cpuOnly} or null
@@ -47,9 +47,11 @@ export function buildCommand(cfg) {
     if (mtp && mtpV !== 'fp16') cmd += ` --cache-type-v-draft ${mtpV}`;
   }
 
-  // DFlash speculative decoding (separate sidecar draft model)
+  // DFlash-family speculative decoding (separate sidecar draft model). DSpark
+  // is the same sidecar shape with the Markov head — its own --spec-type
+  // (speculative.cpp:78 "draft-dspark"), same draft cache flags otherwise.
   if (dflash && dflash.fileName) {
-    cmd += ` --spec-type draft-dflash --spec-draft-n-max 2`;
+    cmd += ` --spec-type ${dflash.specType || 'draft-dflash'} --spec-draft-n-max 2`;
     cmd += ` -md ./models/<${dflash.fileName}>`;
     if (dflash.kCacheType && dflash.kCacheType !== 'fp16') cmd += ` --cache-type-k-draft ${dflash.kCacheType}`;
     if (dflash.vCacheType && dflash.vCacheType !== 'fp16') cmd += ` --cache-type-v-draft ${dflash.vCacheType}`;

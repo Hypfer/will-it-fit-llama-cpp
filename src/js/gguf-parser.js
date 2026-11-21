@@ -366,6 +366,45 @@ export function ggufToConfig(metadata) {
     ? layerPattern.map(isSwa => (isSwa ? 'sliding_attention' : 'full_attention'))
     : undefined;
 
+  // Inkling2 (and the loop variant): needs dedicated mapping — per-layer head
+  // arrays, the swa head dim, the shortconv kernel and the loop core all feed
+  // extractArch's inkling2 normalization (vram-estimator.js extractInkling2).
+  if (archName === 'inkling2' || archName === 'inkling2_loop') {
+    const config = {
+      model_type: archName,
+      num_hidden_layers: num('block_count'),
+      hidden_size: num('embedding_length'),
+      // head counts arrive as per-layer arrays (the converter writes the swa
+      // variants per layer) — extractInkling2 resolves them positionally
+      num_attention_heads: metadata[p + 'attention.head_count'],
+      num_key_value_heads: metadata[p + 'attention.head_count_kv'],
+      head_dim: num('attention.key_length'),
+      swa_head_dim: num('attention.key_length_swa'),
+      sliding_window_size: num('attention.sliding_window'),
+      layer_types: layerTypes,
+      sconv_kernel_size: num('shortconv.l_cache'),
+      vocab_size: num('vocab_size'), // padded — llama.cpp allocates padded-width logits
+      max_position_embeddings: num('context_length'),
+    };
+    // Loop metadata, two layouts:
+    // - ggml-org / Mainline_Support: loop.start/.end/.count + block_count = 24
+    //   physical layers -> extractInkling2 expands to cache slots
+    // - unsloth root quants: loop.core_start/.core_end + num_loops with
+    //   block_count ALREADY the expanded slot count (loop tensors present, only
+    //   blk.0..23 weights) -> pre_expanded, never expand again
+    const loopCount = num('loop.count');
+    const numLoops = num('num_loops');
+    const coreStart = num('loop.start') ?? num('loop.core_start');
+    const coreEnd = num('loop.end') ?? num('loop.core_end');
+    if (loopCount > 1) {
+      config.loop_config = { core_start: coreStart, core_end: coreEnd, num_passes: loopCount };
+    } else if (numLoops > 1 && coreStart != null) {
+      config.loop_config = { core_start: coreStart, core_end: coreEnd, num_passes: numLoops, pre_expanded: true };
+    }
+    if (config.num_hidden_layers == null || config.num_attention_heads == null) return null;
+    return config;
+  }
+
   // Per-layer head_count_kv arrays (GLM-5.3-Flash) mark which layers have KV;
   // count_nonzero gives the DSA/full-attn layer count for the pattern-less case.
   const headKvArr = metadata[p + 'attention.head_count_kv'];

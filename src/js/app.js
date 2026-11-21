@@ -67,13 +67,48 @@ async function fetchGgufHeaderBytes(repoId, filePath, bytes = 131072) {
 // ---------------------------------------------------------------------------
 
 /**
- * Find the DFlash sidecar in the repo file tree.
- * Detection rule (from unsloth PR #8338): root-level `dflash-*.gguf` files.
+ * True for draft sidecar files (dflash-/dspark- named, common/download.cpp:685)
+ * wherever they sit in the tree — root level like unsloth's dspark-, or a
+ * dspark/ subdir holding the BF16 source next to the Q8_0 sidecar.
+ */
+function isDraftSidecarFile(path) {
+  const base = path.split('/').pop();
+  return base.startsWith('dflash-') || base.startsWith('dspark-');
+}
+
+/**
+ * Find the DFlash-family sidecar in the repo file tree.
+ * Detection rule (common/download.cpp:685-687): root-level `dflash-*.gguf` and
+ * `dspark-*.gguf` files. DSpark is a dflash draft plus the Markov/confidence
+ * heads (speculative.cpp: impl_draft_dspark inherits impl_draft_dflash, the
+ * sidecar is still a dflash-arch GGUF) and outranks dflash when both exist
+ * (arg.cpp:567).
  */
 function findDflashSidecar(files) {
+  const dspark = files.find(f =>
+    f.path.startsWith('dspark-') && f.path.endsWith('.gguf')
+  );
+  if (dspark) return dspark;
   return files.find(f =>
     f.path.startsWith('dflash-') && f.path.endsWith('.gguf')
   );
+}
+
+/**
+ * Swap the DFlash/DSpark wording in the sidebar section to match whichever
+ * sidecar the repo ships. Walks text nodes only, so the checkbox input and
+ * selects inside the labels survive.
+ */
+function setDflashLabels(dspark) {
+  const section = document.getElementById('dflash-section');
+  if (!section) return;
+  const walker = document.createTreeWalker(section, NodeFilter.SHOW_TEXT);
+  let node;
+  while ((node = walker.nextNode())) {
+    if (/DFlash|DSpark/.test(node.textContent)) {
+      node.textContent = node.textContent.replace(/DFlash|DSpark/g, dspark ? 'DSpark' : 'DFlash');
+    }
+  }
 }
 
 /**
@@ -84,24 +119,29 @@ async function loadDflashSidecar(repoId, files) {
   const sidecar = findDflashSidecar(files);
   if (!sidecar) {
     cachedDflash = null;
+    setDflashLabels(false);
     return null;
   }
 
   const fileName = sidecar.path.split('/').pop();
   const sizeGB = sidecar.size / 1e9;
+  // dspark- sidecars run as --spec-type draft-dspark, everything else the
+  // estimator needs is the same dflash.* metadata
+  const variant = sidecar.path.startsWith('dspark-') ? 'dspark' : 'dflash';
+  setDflashLabels(variant === 'dspark');
 
   try {
     const buf = await fetchGgufHeaderBytes(repoId, sidecar.path);
     const { metadata } = parseGgufHeader(buf);
     const arch = extractDflashArch(metadata);
     cachedDflash = {
-      fileName, sizeGB, arch, path: sidecar.path,
+      fileName, sizeGB, arch, path: sidecar.path, variant,
       headerError: arch ? null : 'No dflash.* metadata found in header',
     };
   } catch (e) {
     console.warn('DFlash header parse failed:', e);
     cachedDflash = {
-      fileName, sizeGB, arch: null, path: sidecar.path,
+      fileName, sizeGB, arch: null, path: sidecar.path, variant,
       headerError: e.message,
     };
   }
@@ -281,7 +321,8 @@ async function loadModel() {
         .filter(f =>
           f.path.endsWith('.gguf') &&
           !f.path.startsWith('mmproj') && !f.path.startsWith('imatrix') &&
-          !f.path.startsWith('dflash-') && !f.path.startsWith('MTP/') &&
+          !isDraftSidecarFile(f.path) &&
+          !f.path.startsWith('MTP/') &&
           !f.path.startsWith('mtp-'))
         .sort((a, b) => b.size - a.size)[0];
       if (firstQuant) {
@@ -435,7 +476,7 @@ function check() {
       f.path.endsWith('.gguf') &&
       !f.path.startsWith('mmproj') &&
       !f.path.startsWith('imatrix') &&
-      !f.path.startsWith('dflash-') &&
+      !isDraftSidecarFile(f.path) &&
       !f.path.startsWith('MTP/') &&
       !f.path.startsWith('mtp-')
     )
@@ -537,11 +578,14 @@ function renderMeta(repo, vram, ctx, arch, est, ubatch, mmprojGpuGB = 0, mmprojC
   const vLabel = document.getElementById('v-quant').selectedOptions[0].textContent;
   const isMla = !!(arch && arch.isMla);
   const { kv, rs, mtp, computeBuf } = est;
-  // n_rs_seq applies whenever MTP drafting is active (embedded head OR sidecar
-  // file) on a rollback-capable hybrid — mirrors estimateVram's nRsSeq.
+  // n_rs_seq applies whenever draft-model speculation is active (embedded MTP
+  // head, MTP sidecar OR a DFlash-family sidecar) on a rollback-capable hybrid
+  // — mirrors estimateVram's nRsSeq (need_n_rs_seq, common.h:417).
   const mtpToggleOn = document.getElementById('mtp-toggle')?.checked ?? true;
-  const nRsSeq = (arch && (arch.isHybrid || arch.nKdaLayers > 0)
-                  && (arch.mtpLayers > 0 || (cachedMtpSidecar && mtpToggleOn))) ? 2 : 0;
+  const dflashToggleOn = document.getElementById('dflash-toggle')?.checked ?? false;
+  const nRsSeq = (arch && (arch.isHybrid || arch.nKdaLayers > 0 || arch.isShortconv)
+                  && (arch.mtpLayers > 0 || (cachedMtpSidecar && mtpToggleOn)
+                      || (cachedDflash && dflashToggleOn))) ? 2 : 0;
 
   let metaLines = `<div><strong>${repo}</strong></div>`;
   // MLA has one combined latent cache: show it as a single KV quant.
@@ -559,6 +603,12 @@ function renderMeta(repo, vram, ctx, arch, est, ubatch, mmprojGpuGB = 0, mmprojC
     } else {
       let kvDetail = `K: ${kv.kGB.toFixed(2)}, V: ${kv.vGB.toFixed(2)}, ${kv.nAttnLayers} attn`;
       if (kv.nSWA > 0) kvDetail += `, ${kv.nSWA} SWA (win: ${arch.slidingWindow})`;
+      // inkling2_loop: the cache-slot count is the loop-expanded one, not the
+      // physical layer count — spell the expansion out so it doesn't read as
+      // a wrong layer count
+      if (arch.loopPasses > 1) {
+        kvDetail += ` (loop: ${arch.physLayers} layers × ${arch.loopPasses} passes = ${arch.numLayers} cache slots)`;
+      }
       if (kv.qsaIdxGB > 0) {
         kvDetail += ` + QSA indexer: ${kv.qsaIdxGB.toFixed(2)} (${arch.qsaIndexerLayers} full-attn × key ${arch.indexerKeyLen * (arch.qsaKpoolRow || 1)}, no V)`;
       }
@@ -567,7 +617,12 @@ function renderMeta(repo, vram, ctx, arch, est, ubatch, mmprojGpuGB = 0, mmprojC
     }
   }
   if (rs.sizeGB > 0) {
-    metaLines += `<div>Recurrent state: ${rs.sizeGB.toFixed(2)} GB (${rs.nRecurLayers} linear-attn layers, ${nRsSeq} rs_seq, f32)</div>`;
+    // inkling2: the state is the shared-width shortconv history every layer
+    // keeps, not linear-attention layers
+    const rsDetail = arch && arch.isShortconv
+      ? `${rs.nRecurLayers} cache slots × shortconv state, ${nRsSeq} rs_seq, f32`
+      : `${rs.nRecurLayers} linear-attn layers, ${nRsSeq} rs_seq, f32`;
+    metaLines += `<div>Recurrent state: ${rs.sizeGB.toFixed(2)} GB (${rsDetail})</div>`;
   }
   if (mtp.sizeGB > 0) {
     const mtpKLabel = document.getElementById('mtp-k-quant').selectedOptions[0].textContent.split(' ')[0];
@@ -583,13 +638,14 @@ function renderMeta(repo, vram, ctx, arch, est, ubatch, mmprojGpuGB = 0, mmprojC
     const d = est.dflash;
     const dflashKLabel = document.getElementById('dflash-k-quant').selectedOptions[0].textContent.split(' ')[0];
     const dflashVLabel = document.getElementById('dflash-v-quant').selectedOptions[0].textContent.split(' ')[0];
+    const dflashName = cachedDflash?.variant === 'dspark' ? 'DSpark draft' : 'DFlash draft';
     let dflashDetail = `${d.sizeGB.toFixed(2)} GB weights`;
     if (d.kv && d.kv.sizeGB > 0) dflashDetail += ` + ${d.kv.sizeGB.toFixed(2)} GB KV (${dflashKLabel}/${dflashVLabel})`;
     else if (cachedDflash && cachedDflash.headerError) dflashDetail += ` + ? GB KV (estimate failed: ${cachedDflash.headerError})`;
     const dflashLink = cachedDflash?.path
       ? `<a href="${HF_BASE}/${repo}/blob/main/${cachedDflash.path}" target="_blank" class="sidecar-link">${d.fileName || 'sidecar'}</a>`
       : (d.fileName || 'sidecar');
-    metaLines += `<div>DFlash draft: ${dflashDetail} (${dflashLink})</div>`;
+    metaLines += `<div>${dflashName}: ${dflashDetail} (${dflashLink})</div>`;
   }
   if (est.mtpSidecar && est.mtpSidecar.total > 0) {
     const m = est.mtpSidecar;
@@ -698,6 +754,8 @@ function renderCommand(repo, ctx, ubatch, arch) {
   if (cachedDflash && document.getElementById('dflash-toggle').checked) {
     dflash = {
       fileName: cachedDflash.fileName,
+      // dspark sidecars draft via their own --spec-type (speculative.cpp:78)
+      specType: cachedDflash.variant === 'dspark' ? 'draft-dspark' : 'draft-dflash',
       kCacheType: quantLabel(document.getElementById('dflash-k-quant')),
       vCacheType: quantLabel(document.getElementById('dflash-v-quant')),
     };
@@ -769,6 +827,7 @@ const MODEL_PRESETS = [
 ];
 const MODEL_PRESETS_MOE = [
   ['Kolibri-1 78B A3.5B', 'Hob-forge/Kolibri-1-GGUF'],
+  ['Inkling-2 Mini 26B A5.4B', 'unsloth/Inkling-2-Mini-GGUF'],
   ['Qwen3.6 35B A3B', 'unsloth/Qwen3.6-35B-A3B-GGUF'],
   ['Gemma4 26B A4B', 'unsloth/gemma-4-26B-A4B-it-GGUF'],
   ['Qwen3.8-Flash-Next 125B A6B', 'unsloth/Qwen3.8-Flash-Next-GGUF'],

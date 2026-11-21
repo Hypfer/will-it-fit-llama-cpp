@@ -95,6 +95,23 @@ test('buildCommand adds DFlash flags when sidecar detected', () => {
   assert.ok(!cmd.includes('draft-mtp'));
 });
 
+test('buildCommand adds DSpark spec type for dspark sidecars', () => {
+  // DSpark = dflash sidecar + Markov head: same -md/draft-cache flags, own
+  // --spec-type (speculative.cpp:78), matched to the model variant
+  const cmd = buildCommand({
+    repo: 'unsloth/Inkling-2-Mini-GGUF',
+    ctx: 131072, ubatch: 512,
+    kCacheType: 'q8_0', vCacheType: 'q8_0',
+    arch: { mtpLayers: 0 },
+    mtp: null,
+    dflash: { fileName: 'dspark-Inkling-2-Mini-Q8_0.gguf', specType: 'draft-dspark', kCacheType: 'q8_0', vCacheType: 'q8_0' },
+  });
+  assert.ok(cmd.includes('--spec-type draft-dspark'));
+  assert.ok(!cmd.includes('draft-dflash'));
+  assert.ok(cmd.includes('--spec-draft-n-max 2'));
+  assert.ok(cmd.includes('-md ./models/<dspark-Inkling-2-Mini-Q8_0.gguf>'));
+});
+
 test('buildCommand handles both MTP and DFlash (MTP takes precedence in flags)', () => {
   // In practice a model won't have both, but test the function doesn't crash
   const cmd = buildCommand({

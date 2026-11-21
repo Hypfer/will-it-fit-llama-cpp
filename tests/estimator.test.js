@@ -1,11 +1,15 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+import { dirname, join } from 'node:path';
 import {
   QUANT_ORDER, sortQuants, parseQuant, isFirstPart, normalizeRepo,
   effectiveBpp, extractArch, calcKVCache, calcMtpKV, calcComputeBuffer,
   calcRecurrentState, calcMmprojCompute, calcMtpDraftCompute,
   estimateVram, withMtpDisabled,
 } from '../src/js/vram-estimator.js';
+import { parseGgufHeader, ggufToConfig } from '../src/js/gguf-parser.js';
 
 // ---------------------------------------------------------------------------
 // Quant ordering & parsing
@@ -703,6 +707,172 @@ test('Kolibri-1 estimateVram: 6 quants from 9 files (3 sharded pairs summed)', (
 });
 
 
+
+// ---------------------------------------------------------------------------
+// Inkling-2 Mini (ggml-org/Inkling-2-Mini-GGUF, thinkingmachines/Inkling-2-Mini)
+// inkling2_loop: hybrid-iswa attention (20 SWA + 4 full of 24 layers) with a
+// shortconv state, loop core [6,18) x 3 passes -> 48 cache slots
+// ---------------------------------------------------------------------------
+
+const INKLING2_MINI_CONFIG = {
+  model_type: 'inkling2_loop',
+  text_config: {
+    model_type: 'inkling2_loop_text',
+    hidden_size: 2304,
+    num_hidden_layers: 24,
+    vocab_size: 201024,
+    unpadded_vocab_size: 200058,
+    num_attention_heads: 24,
+    num_key_value_heads: 8,
+    head_dim: 128,
+    swa_num_attention_heads: 24,
+    swa_num_key_value_heads: 8,
+    swa_head_dim: 128,
+    sliding_window_size: 1024,
+    sconv_kernel_size: 4,
+    local_layer_ids: [0, 1, 2, 3, 4, 6, 7, 8, 9, 10, 12, 13, 14, 15, 16, 18, 19, 20, 21, 22],
+    loop_config: { core_start: 6, core_end: 18, num_passes: 3, gate_rank: 64, is_varloop: false },
+  },
+};
+
+test('Inkling-2 Mini extractArch expands the loop to cache slots', () => {
+  const arch = extractArch(INKLING2_MINI_CONFIG);
+  // 24 physical layers; loop core [6,18) re-run 2 extra times = 24 + 24 slots
+  assert.equal(arch.physLayers, 24);
+  assert.equal(arch.numLayers, 48);
+  assert.equal(arch.loopPasses, 3);
+  // 20 SWA + 4 full physical; core has 10 SWA + 2 full -> 40 SWA + 8 full slots
+  assert.equal(arch.layerTypes.filter(t => t === 'sliding_attention').length, 40);
+  assert.equal(arch.layerTypes.filter(t => t === 'full_attention').length, 8);
+  assert.equal(arch.numKVHeads, 8);
+  assert.equal(arch.headDim, 128);
+  assert.equal(arch.swaNumKVHeads, 8);
+  assert.equal(arch.swaHeadDim, 128);
+  assert.equal(arch.slidingWindow, 1024);
+  assert.equal(arch.vocabSize, 201024); // padded vocab drives the logits buffer
+  assert.equal(arch.mtpLayers, 0);      // GGUF ships no MTP tensors
+  assert.equal(arch.isHybrid, true);
+  assert.equal(arch.isShortconv, true);
+  // n_embd_r = max(2*kv_dim + 2*hidden) * (l_cache - 1) = 6656 * 3
+  assert.equal(arch.shortconvState, 19968);
+});
+
+test('Inkling-2 Mini KV at 64K f16: 8 full slots at ctx + 40 SWA slots at padded window', () => {
+  const arch = extractArch(INKLING2_MINI_CONFIG);
+  const ctx = 65536, ubatch = 512;
+  const kv = calcKVCache(ctx, ubatch, arch, 2, 2);
+  assert.equal(kv.nAttnLayers, 48);
+  assert.equal(kv.nSWA, 40);
+  // Full slots: 8 * 1024 elems * 65536 cells * (2+2 B); SWA slots:
+  // GGML_PAD(min(ctx, 1024+512), 256) = 1536 cells -> 40 * 1024 * 1536 * 4 B
+  const expect = (8 * 1024 * 65536 * 4 + 40 * 1024 * 1536 * 4) / 1e9;
+  assert.ok(Math.abs(kv.sizeGB - expect) < 1e-9, `KV was ${kv.sizeGB}`);
+  assert.ok(Math.abs(kv.sizeGB - 2.399141888) < 1e-6, `KV was ${kv.sizeGB}, expected ~2.399`);
+});
+
+test('Inkling-2 Mini shortconv state: one shared-width row per cache slot, f32', () => {
+  const arch = extractArch(INKLING2_MINI_CONFIG);
+  const rs = calcRecurrentState(arch, 0);
+  // 48 slots * 19968 elems * 1 row * 4 B
+  assert.equal(rs.nRecurLayers, 48);
+  assert.ok(Math.abs(rs.sizeGB - 48 * 19968 * 4 / 1e9) < 1e-12, `RS was ${rs.sizeGB}`);
+  // No MTP drafting on this model -> n_rs_seq stays 0 (llama-context need_n_rs_seq)
+  assert.ok(rs.sizeGB < 0.004);
+});
+
+test('Inkling-2 Mini estimateVram: BF16 weights + KV + rs + hybrid compute', () => {
+  const arch = extractArch(INKLING2_MINI_CONFIG);
+  const est = estimateVram({
+    ggufFiles: [
+      { path: 'Inkling-2-Mini-BF16.gguf', size: 26070385152 },
+      { path: 'Inkling-2-Mini-IQ4_NL.gguf', size: 8432100000 },
+    ],
+    ctx: 65536, ubatch: 512, arch, kBpp: 2, vBpp: 2, mtpkBpp: 2, mtpvBpp: 2,
+  });
+  const byName = Object.fromEntries(est.quants.map(q => [q.quant, q]));
+  // padded vocab 201024 * 512 * 2 B logits + 0.8 GB hybrid base
+  assert.ok(Math.abs(est.computeBuf - (201024 * 512 * 2 / 1e9 + 0.8)) < 1e-9);
+  const extras = est.kv.sizeGB + est.rs.sizeGB + est.computeBuf;
+  assert.ok(Math.abs(byName.BF16.total - (26.070385152 + extras)) < 1e-9);
+  assert.ok(Math.abs(byName.IQ4_NL.total - (8.4321 + extras)) < 1e-9);
+  // No MTP / dflash / sidecar columns
+  assert.equal(est.mtp.sizeGB, 0);
+});
+
+test('Inkling-2 GGUF-header fallback matches the config path', () => {
+  // The real IQ4_NL header fixture, driven through ggufToConfig -> extractArch
+  // (the app's path when the base model config.json is unavailable)
+  const fixture = join(dirname(fileURLToPath(import.meta.url)), 'fixtures', 'inkling2_header.bin');
+  const { metadata } = parseGgufHeader(readFileSync(fixture));
+  const arch = extractArch(ggufToConfig(metadata));
+  const fromConfig = extractArch(INKLING2_MINI_CONFIG);
+  for (const key of ['numLayers', 'physLayers', 'loopPasses', 'numKVHeads', 'headDim',
+    'swaNumKVHeads', 'swaHeadDim', 'slidingWindow', 'shortconvState', 'vocabSize',
+    'isHybrid', 'isShortconv']) {
+    assert.deepEqual(arch[key], fromConfig[key], `${key} mismatch`);
+  }
+  assert.deepEqual(arch.layerTypes, fromConfig.layerTypes);
+});
+
+test('unsloth pre-expanded header estimates identically to the loop variant', () => {
+  // unsloth/Inkling-2-Mini-GGUF root UD quants are loop models with block_count
+  // ALREADY the expanded slot count (num_loops layout); the ggml-org
+  // inkling2_loop file expands 24 physical layers at load. Both share one set
+  // of core weights across passes — same 48 cache slots, same layer pattern,
+  // same conv-state width; only the metadata layout differs.
+  const fixture = (name) => join(dirname(fileURLToPath(import.meta.url)), 'fixtures', name);
+  const unrolled = extractArch(ggufToConfig(parseGgufHeader(readFileSync(fixture('inkling2_unsloth_header.bin'))).metadata));
+  const looped = extractArch(ggufToConfig(parseGgufHeader(readFileSync(fixture('inkling2_header.bin'))).metadata));
+  assert.equal(unrolled.numLayers, 48);
+  assert.equal(looped.numLayers, 48);
+  // Both report the loop for display: 24 physical layers x 3 passes
+  assert.equal(unrolled.loopPasses, 3);
+  assert.equal(looped.loopPasses, 3);
+  assert.equal(unrolled.physLayers, 24);
+  assert.equal(looped.physLayers, 24);
+  assert.deepEqual(unrolled.layerTypes, looped.layerTypes);
+  assert.equal(unrolled.shortconvState, looped.shortconvState);
+  assert.equal(unrolled.vocabSize, looped.vocabSize);
+  const kvA = calcKVCache(65536, 512, unrolled, 2, 2);
+  const kvB = calcKVCache(65536, 512, looped, 2, 2);
+  assert.equal(kvA.sizeGB, kvB.sizeGB);
+});
+
+test('a dspark sidecar grows the target recurrent rows (need_n_rs_seq)', () => {
+  // Any draft-model spec type sets the target's n_rs_seq = draft.n_max
+  // (common.h:417) — DFlash-family sidecars included, not just MTP. The
+  // command's n-max 2 -> 3 conv-state rows instead of 1.
+  const arch = extractArch(INKLING2_MINI_CONFIG);
+  const files = [{ path: 'Inkling-2-Mini-UD-Q4_K_XL.gguf', size: 8.4e9 }];
+  const base = { ggufFiles: files, ctx: 65536, ubatch: 512, arch, kBpp: 2, vBpp: 2, mtpkBpp: 2, mtpvBpp: 2 };
+  const without = estimateVram(base);
+  const withDspark = estimateVram({ ...base, dflash: { sizeGB: 1.5, arch: { numLayers: 3, numKVHeads: 8, headDim: 128, slidingWindow: 1024,
+    layerTypes: ['sliding_attention', 'full_attention', 'sliding_attention'], fullAttnInterval: 1, isHybrid: false, mtpLayers: 0 } } });
+  assert.equal(without.rs.sizeGB, 48 * 19968 * 1 * 4 / 1e9);
+  assert.ok(Math.abs(withDspark.rs.sizeGB - 48 * 19968 * 3 * 4 / 1e9) < 1e-12,
+    `RS was ${withDspark.rs.sizeGB}, expected 3 rows`);
+});
+
+test('Inkling-2 SWA layers use their own head count and dim when they differ', () => {  // Hypothetical inkling2 with swa_num_key_value_heads=4 / swa_head_dim=64
+  const arch = extractArch({
+    text_config: {
+      model_type: 'inkling2_text',
+      hidden_size: 2304, num_hidden_layers: 6,
+      num_attention_heads: 24, num_key_value_heads: 8, head_dim: 128,
+      swa_num_key_value_heads: 4, swa_head_dim: 64,
+      sliding_window_size: 1024, sconv_kernel_size: 4,
+      layer_types: ['hybrid_sliding', 'hybrid', 'hybrid_sliding', 'hybrid', 'hybrid_sliding', 'hybrid'],
+    },
+  });
+  assert.equal(arch.numLayers, 6); // no loop_config -> no expansion
+  assert.equal(arch.loopPasses, 0);
+  const kv = calcKVCache(65536, 512, arch, 2, 2);
+  // 3 full slots at 8*128 + 3 SWA slots at 4*64, SWA ctx padded to 1536
+  const expect = (3 * 1024 * 65536 * 4 + 3 * 256 * 1536 * 4) / 1e9;
+  assert.ok(Math.abs(kv.sizeGB - expect) < 1e-9, `KV was ${kv.sizeGB}`);
+  // conv width takes the max group: max(2*4*64, 2*8*128) + 2*2304 = 6656
+  assert.equal(arch.shortconvState, 19968);
+});
 
 test('estimateVram aggregates per-quant totals with KV + compute', () => {
   const ggufFiles = [

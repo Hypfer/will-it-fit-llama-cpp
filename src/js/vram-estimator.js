@@ -64,9 +64,113 @@ export function effectiveBpp(rowElems, bpp) {
 }
 
 /**
+ * Inkling2 (thinkingmachines Inkling-2): every layer is attention, a mostly-
+ * sliding-window mix (pattern from layer_types "hybrid"/"hybrid_sliding" or
+ * local_layer_ids), plus a per-layer shortconv state in the recurrent cache —
+ * llama.cpp runs it on the hybrid memory with BOTH filters letting every layer
+ * through (llama-model.cpp INKLING2 branch: filter_attn = filter_recr = true).
+ * The "loop" variant re-runs a core block [core_start, core_end) num_passes
+ * times: weights are shared, but each pass keeps its own cache slots —
+ * inkling2-loop.cpp expands n_layer_all to n_layer + (num_passes-1)*
+ * (core_end-core_start) BEFORE the KV cache and conv state allocate.
+ *
+ * SWA layers can use their own head counts/dims (swa_num_key_value_heads /
+ * swa_head_dim; GGUF: attention.key_length_swa), full layers the plain ones —
+ * n_embd_head_k(il) picks per is_swa (llama-hparams.cpp:142).
+ *
+ * Conv state width (llama-hparams.cpp n_embd_r, inkling2.cpp load_arch_hparams):
+ *   n_sconv_channels = max_il(2*n_embd_k_gqa(il) + 2*n_embd)  // K, V, attn-out, ffn-out
+ *   n_embd_r = n_sconv_channels * (shortconv_l_cache - 1)     // F32, per cache slot
+ */
+function extractInkling2(c) {
+  const physLayers = c.num_hidden_layers || 0;
+  if (!physLayers) return null;
+
+  // Layer pattern: transformers layer_types ("hybrid" = full, "hybrid_sliding" =
+  // SWA), local_layer_ids (local = SWA), or the standard names (ggufToConfig).
+  let physTypes = null;
+  if (Array.isArray(c.layer_types) && c.layer_types.length === physLayers) {
+    physTypes = c.layer_types.map(t =>
+      t === 'sliding_attention' || t === 'hybrid_sliding' ? 'sliding_attention' : 'full_attention');
+  } else if (Array.isArray(c.local_layer_ids)) {
+    const local = new Set(c.local_layer_ids);
+    physTypes = Array.from({ length: physLayers }, (_, i) =>
+      local.has(i) ? 'sliding_attention' : 'full_attention');
+  }
+  const typeAt = il => (physTypes ? physTypes[il] : 'full_attention');
+
+  // Per-layer KV dims: GGUF headers carry per-layer arrays (positional, the
+  // converter already resolved the swa variants); transformers configs give
+  // one value per group (swa_* for SWA layers, plain for full layers).
+  const kvArr = Array.isArray(c.num_key_value_heads) ? c.num_key_value_heads : null;
+  const dimArr = Array.isArray(c.head_dim) ? c.head_dim : null;
+  const kvAt = il => (kvArr ? kvArr[il]
+    : (typeAt(il) === 'sliding_attention'
+        ? (c.swa_num_key_value_heads ?? c.num_key_value_heads ?? c.num_attention_heads)
+        : (c.num_key_value_heads ?? c.num_attention_heads)));
+  const dimAt = il => (dimArr ? dimArr[il]
+    : (typeAt(il) === 'sliding_attention' ? (c.swa_head_dim ?? c.head_dim) : c.head_dim));
+
+  // Loop expansion (inkling2_loop): the core block's slots repeat per extra
+  // pass. The unsloth quants instead ship block_count ALREADY expanded (with
+  // num_loops instead of loop.count, and only the physical layers' weights +
+  // loop tensors in the file) — pre_expanded reports the loop for display but
+  // must not expand a second time.
+  const lc = c.loop_config;
+  let layerTypes = physTypes;
+  let numLayers = physLayers;
+  let loopPasses = 0;
+  let physCount = physLayers;
+  if (lc && lc.num_passes > 1 && lc.core_end > lc.core_start) {
+    if (lc.pre_expanded) {
+      physCount = Math.max(1, physLayers - (lc.num_passes - 1) * (lc.core_end - lc.core_start));
+      loopPasses = lc.num_passes;
+    } else if (physTypes) {
+      const core = physTypes.slice(lc.core_start, lc.core_end);
+      layerTypes = physTypes.concat(...Array.from({ length: lc.num_passes - 1 }, () => core));
+      numLayers = layerTypes.length;
+      loopPasses = lc.num_passes;
+    }
+  }
+
+  // Conv state width is the widest physical layer's K,V + attn and FFN outputs
+  const convKernel = c.sconv_kernel_size || c.conv_kernel_size || 0;
+  const hidden = c.hidden_size || 0;
+  let shortconvState = 0;
+  if (convKernel > 1 && hidden) {
+    let channels = 0;
+    for (let il = 0; il < physLayers; il++) {
+      channels = Math.max(channels, 2 * kvAt(il) * dimAt(il) + 2 * hidden);
+    }
+    shortconvState = channels * (convKernel - 1);
+  }
+
+  // Per-group scalars for calcKVCache: full layers use the plain values, SWA
+  // layers the swa_* ones (same trick as Gemma4's global*, mirrored)
+  const fullIdx = physTypes ? physTypes.indexOf('full_attention') : 0;
+  const swaIdx = physTypes ? physTypes.indexOf('sliding_attention') : -1;
+  const pick = at => at(fullIdx >= 0 ? fullIdx : 0);
+
+  return {
+    layerTypes,
+    numLayers,
+    loopPasses,
+    physLayers: physCount, // physical weight layers (display; slots are numLayers)
+    numKVHeads: pick(kvAt),
+    headDim: pick(dimAt),
+    swaNumKVHeads: swaIdx >= 0 ? kvAt(swaIdx) : undefined,
+    swaHeadDim: swaIdx >= 0 ? dimAt(swaIdx) : undefined,
+    slidingWindow: c.sliding_window_size || c.sliding_window || 0,
+    shortconvState,
+    vocabSize: c.vocab_size,
+  };
+}
+
+/**
  * Extract architecture params from a transformers config.json.
  * Handles: standard dense, GQA, hybrid (linear_attention), MTP, sliding-window,
- * and Gemma4 dual-KV (num_global_key_value_heads / global_head_dim).
+ * Gemma4 dual-KV (num_global_key_value_heads / global_head_dim), and Inkling2
+ * (hybrid shortconv attention, incl. the loop-expanded inkling2_loop variant).
  */
 export function extractArch(config) {
   const c = config.text_config || config;
@@ -130,7 +234,13 @@ export function extractArch(config) {
     ? (Math.max(1, c.ple_conv_kernel_size || 4) - 1)
       * (c.ngram_size || 0) * (c.hc_count || 1) * (c.hidden_size || 0)
     : 0;
-  return {
+  // Inkling2 (hybrid shortconv attention, optionally loop-expanded): normalize
+  // its config into the fields below — per-group SWA KV dims, the conv state
+  // width, and the loop's expanded cache-slot count.
+  const ink = (typeof c.model_type === 'string' && c.model_type.startsWith('inkling2'))
+    ? extractInkling2(c) : null;
+
+  const arch = {
     hiddenSize: c.hidden_size,
     numLayers,
     numAttnHeads: c.num_attention_heads,
@@ -180,6 +290,31 @@ export function extractArch(config) {
     mtpLayers,
     vocabSize: c.vocab_size || 128256,
   };
+
+  if (ink) {
+    Object.assign(arch, {
+      layerTypes: ink.layerTypes,
+      numLayers: ink.numLayers,
+      loopPasses: ink.loopPasses,
+      physLayers: ink.physLayers,
+      numAttnHeads: Array.isArray(c.num_attention_heads) ? c.num_attention_heads[0] : c.num_attention_heads,
+      numKVHeads: ink.numKVHeads,
+      headDim: ink.headDim,
+      // SWA layers use the swa_* head count/dim (llama-hparams.cpp n_embd_head_k)
+      swaNumKVHeads: ink.swaNumKVHeads,
+      swaHeadDim: ink.swaHeadDim,
+      slidingWindow: ink.slidingWindow,
+      // Every layer is attention; isHybrid marks the recurrent conv state +
+      // hybrid-sized compute buffer, like the other hybrid archs
+      isHybrid: true,
+      // One shared-width shortconv state per cache slot, F32 (no S state)
+      isShortconv: true,
+      shortconvState: ink.shortconvState,
+      vocabSize: ink.vocabSize || arch.vocabSize,
+    });
+  }
+
+  return arch;
 }
 
 /**
@@ -242,7 +377,10 @@ export function calcKVCache(ctx, ubatch, arch, kBpp, vBpp) {
         vBytes += nEmbK * ctx * eVBpp.bpp;
         nAttnCount++;
       } else if (lt === 'sliding_attention') {
-        const nEmbK = arch.numKVHeads * arch.headDim;
+        // Inkling2 SWA layers can use their own head count/dim (swa_* config
+        // keys / GGUF key_length_swa — llama-hparams.cpp n_embd_head_k);
+        // other archs fall through to the shared values.
+        const nEmbK = (arch.swaNumKVHeads || arch.numKVHeads) * (arch.swaHeadDim || arch.headDim);
         const eKBpp = effectiveBpp(nEmbK, kBpp);
         const eVBpp = effectiveBpp(nEmbK, vBpp);
         maxPct = Math.max(maxPct, eKBpp.pct, eVBpp.pct);
@@ -307,7 +445,8 @@ export function withMtpDisabled(arch) {
 }
 
 /**
- * Recurrent state for hybrid models. Two shapes:
+ * Recurrent state for hybrid models. Three shapes:
+ * - Inkling2 shortconv: one shared-width conv state per cache slot (all layers).
  * - Mamba-style (Qwen3.6 linear_attention): conv + SSM state.
  * - KDA / Gated DeltaNet (GLM-5.3-Flash "linear_attention"): conv state for
  *   Q,K,V + the S matrix, both F32 (llama-hparams.cpp n_embd_r/n_embd_s KDA
@@ -317,6 +456,14 @@ export function withMtpDisabled(arch) {
  *   Rows = 1 + nRsSeq (same cell layout as the KV cache).
  */
 export function calcRecurrentState(arch, nRsSeq) {
+  // Inkling2 shortconv state: ONE conv-state row per cache slot at the shared
+  // widest-layer width (n_embd_r = n_sconv_channels * (l_cache-1),
+  // llama-hparams.cpp:214), F32, no S state (n_embd_s() = 0 for inkling2).
+  // Slots = numLayers (loop-expanded when the model loops).
+  if (arch.isShortconv && arch.shortconvState) {
+    const totalBytes = arch.numLayers * arch.shortconvState * (1 + nRsSeq) * 4;
+    return { sizeGB: totalBytes / 1e9, nRecurLayers: arch.numLayers, nAttnLayers: 0 };
+  }
   // KDA / Gated DeltaNet (GLM-5.3-Flash "linear_attention" layers): keyed off
   // layer_types + linear_attn_config, independent of the Mamba isHybrid flag
   // (Flash has no full_attention_interval).
@@ -494,15 +641,17 @@ export function estimateVram(opts) {
     ? calcKVCache(ctx, ubatch, arch, kBpp, vBpp)
     : { sizeGB: 0, kGB: 0, vGB: 0, nAttnLayers: 0, nSWA: 0, padPct: 0 };
 
-  // Recurrent state (hybrid models). --spec-type draft-mtp/dflash sets the
-  // TARGET's n_rs_seq = draft.n_max (need_n_rs_seq, common.h) for archs that
-  // support recurrent rollback (QWEN4EXP, QWEN35, GLM5_NEXT, …), so MTP
-  // drafting — embedded head OR sidecar file — grows the recurrent rows to
-  // 1 + n_rs_seq regardless of which shape it takes. The generated command
-  // uses --spec-draft-n-max 2 → n_rs_seq = 2 → 3 rows.
-  const hasRecurrentState = !!(arch && (arch.isHybrid || arch.nKdaLayers > 0));
+  // Recurrent state (hybrid models). ANY draft-model speculation (--spec-type
+  // draft-mtp, draft-dflash, draft-dspark, …) sets the TARGET's n_rs_seq =
+  // draft.n_max for archs that support recurrent rollback (need_n_rs_seq,
+  // common.h:417), so drafting — embedded MTP head, MTP sidecar OR a
+  // DFlash-family sidecar file — grows the recurrent rows to 1 + n_rs_seq
+  // regardless of which shape it takes. The generated command uses
+  // --spec-draft-n-max 2 → n_rs_seq = 2 → 3 rows.
+  const hasRecurrentState = !!(arch && (arch.isHybrid || arch.nKdaLayers > 0 || arch.isShortconv));
   const mtpActive = !!(arch && arch.mtpLayers > 0) || !!mtpSidecar;
-  const nRsSeq = hasRecurrentState && mtpActive ? 2 : 0;
+  const dflashActive = !!(dflash && dflash.arch);
+  const nRsSeq = hasRecurrentState && (mtpActive || dflashActive) ? 2 : 0;
   const rs = arch ? calcRecurrentState(arch, nRsSeq) : { sizeGB: 0, nRecurLayers: 0 };
 
   // MTP draft KV
